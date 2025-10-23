@@ -1,0 +1,7 @@
+FROM qdrant/qdrant:latest
+
+# Expose ports
+EXPOSE 6333 6334
+
+# Use default entrypoint and command from base image
+

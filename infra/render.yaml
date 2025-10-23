@@ -1,0 +1,77 @@
+services:
+  # FastAPI Backend
+  - type: web
+    name: realestate-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: ./apps/api
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: app-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: app-redis
+          type: redis
+          property: connectionString
+      - key: QDRANT_URL
+        value: http://qdrant:6333
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+    dependsOn:
+      - qdrant
+      - app-redis
+      - app-postgres
+
+  # Next.js Frontend
+  - type: web
+    name: realestate-web
+    runtime: node
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    rootDir: ./apps/web
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE
+        fromService:
+          name: realestate-api
+          type: web
+          property: hostAndPort
+
+  # Qdrant Vector DB (Private Service)
+  - type: pserv
+    name: qdrant
+    runtime: docker
+    dockerfilePath: ./Dockerfile.qdrant
+    dockerContext: ./infra
+    disk:
+      name: qdrant-disk
+      mountPath: /qdrant/storage
+      sizeGB: 10
+    envVars:
+      - key: QDRANT__SERVICE__HTTP_PORT
+        value: 6333
+
+  # Redis Cache/Queue
+  - type: redis
+    name: app-redis
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
+
+# PostgreSQL Database
+databases:
+  - name: app-postgres
+    databaseName: app
+    plan: starter
+    ipAllowList: []
+
