@@ -41,6 +41,9 @@ export default function InventoryPage() {
       if (filters.max_beds) params.append('max_beds', filters.max_beds)
       
       const response = await fetch(`${API_BASE}/inventory/search?${params}`)
+      if (!response.ok) {
+        throw new Error(`Inventory request failed with ${response.status}`)
+      }
       const data = await response.json()
       setUnits(data.units || [])
     } catch (error) {
@@ -388,4 +391,3 @@ export default function InventoryPage() {
     </div>
   )
 }
-

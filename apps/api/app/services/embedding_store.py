@@ -10,7 +10,7 @@ from qdrant_client.models import (
     FieldCondition,
     MatchValue,
 )
-import openai
+from qdrant_client.http.models import PointIdsList
 from openai import OpenAI
 
 from ..config import get_settings
@@ -51,7 +51,7 @@ class EmbeddingStore(Protocol):
 class QdrantEmbeddingStore:
     """Qdrant implementation of embedding store"""
 
-    EMBEDDING_DIM = 1536  # OpenAI text-embedding-3-small
+    EMBEDDING_DIM = 1536  # Default dimension for text-embedding-3-small
 
     def __init__(self, client: QdrantClient):
         self.client = client
@@ -60,7 +60,7 @@ class QdrantEmbeddingStore:
 
     def _ensure_collections(self):
         """Create collections if they don't exist"""
-        collections = ["units", "lead_memories"]
+        collections = ["units", "lead_memories", "knowledge"]
 
         existing = {c.name for c in self.client.get_collections().collections}
 
@@ -77,7 +77,7 @@ class QdrantEmbeddingStore:
     def _get_embedding(self, text: str) -> List[float]:
         """Get embedding from OpenAI"""
         response = self.openai_client.embeddings.create(
-            model="text-embedding-3-small",
+            model=settings.openai_embedding_model,
             input=text,
         )
         return response.data[0].embedding
@@ -138,5 +138,5 @@ class QdrantEmbeddingStore:
         """Delete a document"""
         self.client.delete(
             collection_name=collection,
-            points_selector=[id],
+            points_selector=PointIdsList(points=[id]),
         )

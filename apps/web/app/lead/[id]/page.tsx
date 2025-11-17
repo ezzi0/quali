@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { use } from 'react'
 import Link from 'next/link'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000'
@@ -50,27 +49,29 @@ interface LeadDetail {
   }>
 }
 
-export default function LeadDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>
-}) {
-  const resolvedParams = use(params)
+export default function LeadDetailPage({ params }: { params: { id: string } }) {
+  const leadId = params.id
   const [lead, setLead] = useState<LeadDetail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchLead()
-  }, [resolvedParams.id])
+  }, [leadId])
 
   const fetchLead = async () => {
     try {
       setLoading(true)
-      const response = await fetch(`${API_BASE}/leads/${resolvedParams.id}`)
+      setError(null)
+      const response = await fetch(`${API_BASE}/leads/${leadId}`)
+      if (!response.ok) {
+        throw new Error(`Lead request failed with ${response.status}`)
+      }
       const data = await response.json()
       setLead(data)
     } catch (error) {
       console.error('Failed to fetch lead:', error)
+      setError('Unable to load lead details. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -80,6 +81,14 @@ export default function LeadDetailPage({
     return (
       <div style={{ padding: '2rem', textAlign: 'center' }}>
         Loading...
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div style={{ padding: '2rem', textAlign: 'center', color: '#ef4444' }}>
+        {error}
       </div>
     )
   }
@@ -312,4 +321,3 @@ export default function LeadDetailPage({
     </div>
   )
 }
-

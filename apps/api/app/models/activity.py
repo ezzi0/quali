@@ -2,6 +2,7 @@
 from sqlalchemy import String, Integer, ForeignKey, Enum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.ext.mutable import MutableDict
 from typing import Optional
 import enum
 
@@ -24,13 +25,18 @@ class Activity(Base, TimestampMixin):
     __tablename__ = "activities"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    lead_id: Mapped[int] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE"), index=True)
 
     type: Mapped[ActivityType] = mapped_column(
-        Enum(ActivityType, native_enum=False))
+        Enum(ActivityType, native_enum=False, validate_strings=True))
 
     # Flexible payload
-    payload: Mapped[Optional[dict]] = mapped_column(JSONB)
+    payload: Mapped[Optional[dict]] = mapped_column(
+        MutableDict.as_mutable(JSONB))
 
     # Relationship
-    lead: Mapped["Lead"] = relationship(back_populates="activities")
+    lead: Mapped["Lead"] = relationship(
+        back_populates="activities",
+        passive_deletes=True,
+    )

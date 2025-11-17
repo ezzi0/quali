@@ -21,7 +21,8 @@ class Task(Base, TimestampMixin):
     __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    lead_id: Mapped[int] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE"), index=True)
 
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(String(1000))
@@ -29,7 +30,7 @@ class Task(Base, TimestampMixin):
     due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus, native_enum=False),
+        Enum(TaskStatus, native_enum=False, validate_strings=True),
         default=TaskStatus.TODO,
         server_default="todo",
     )
@@ -37,4 +38,7 @@ class Task(Base, TimestampMixin):
     assignee: Mapped[Optional[str]] = mapped_column(String(100))
 
     # Relationship
-    lead: Mapped["Lead"] = relationship(back_populates="tasks")
+    lead: Mapped["Lead"] = relationship(
+        back_populates="tasks",
+        passive_deletes=True,
+    )

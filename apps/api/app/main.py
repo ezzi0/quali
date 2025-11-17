@@ -1,5 +1,5 @@
 """FastAPI application entry point"""
-from .routes import agent, leads, inventory, webhooks
+from .routes import agent, leads, inventory, webhooks, marketing, monitoring
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -131,3 +131,5 @@ app.include_router(agent.router, prefix="/agent", tags=["agent"])
 app.include_router(leads.router, prefix="/leads", tags=["leads"])
 app.include_router(inventory.router, prefix="/inventory", tags=["inventory"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
+app.include_router(marketing.router, prefix="/marketing", tags=["marketing"])
+app.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])

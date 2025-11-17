@@ -52,10 +52,14 @@ export default function ChatPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          session_id: storedSessionId,
           email: storedEmail,
           phone: storedPhone
         })
       })
+      if (!response.ok) {
+        throw new Error(`Session request failed with ${response.status}`)
+      }
       const data = await response.json()
       
       setSessionId(data.session_id)
@@ -78,7 +82,6 @@ export default function ChatPage() {
           }
         }
         setMessages(history)
-        console.log('✅ Session resumed with', history.length, 'messages')
       }
     } catch (error) {
       console.error('Failed to initialize session:', error)
@@ -143,7 +146,7 @@ export default function ChatPage() {
             try {
               const event = JSON.parse(data)
 
-              if (event.type === 'text') {
+              if (event.type === 'text' || event.type === 'message') {
                 assistantMessage += event.content
                 // Update assistant message in real-time
                 setMessages(prev => {
@@ -153,25 +156,49 @@ export default function ChatPage() {
                   if (lastMessage && lastMessage.role === 'assistant') {
                     // Update existing message
                     lastMessage.content = assistantMessage
+                    if (currentToolCalls.length) {
+                      lastMessage.tool_calls = [...currentToolCalls]
+                    }
                   } else {
                     // Add new assistant message
-                    newMessages.push({ role: 'assistant', content: assistantMessage })
+                    newMessages.push({
+                      role: 'assistant',
+                      content: assistantMessage,
+                      tool_calls: currentToolCalls.length ? [...currentToolCalls] : undefined
+                    })
                   }
                   
                   return newMessages
                 })
               } else if (event.type === 'tool_start') {
-                // Tool call started
-                console.log('Tool started:', event.tool)
+                // Tool call started - noop for now
               } else if (event.type === 'tool_result') {
                 // Add tool call to current message
                 currentToolCalls.push({
                   tool: event.tool,
                   result: event.result
                 })
+                setMessages(prev => {
+                  const newMessages = [...prev]
+                  const lastMessage = newMessages[newMessages.length - 1]
+                  if (lastMessage && lastMessage.role === 'assistant') {
+                    lastMessage.tool_calls = [...currentToolCalls]
+                  } else {
+                    newMessages.push({
+                      role: 'assistant',
+                      content: '',
+                      tool_calls: [...currentToolCalls]
+                    })
+                  }
+                  return newMessages
+                })
               } else if (event.type === 'context_update') {
                 // Update context
                 setContext(event.context)
+                if (event.context?.session_id) {
+                  setSessionId(event.context.session_id)
+                  localStorage.setItem('quali_session_id', event.context.session_id)
+                }
                 
                 // Check if email or phone was captured and store in localStorage
                 const collected = event.context?.collected_data || {}
@@ -187,9 +214,15 @@ export default function ChatPage() {
                   role: 'assistant',
                   content: '🔔 This conversation needs human attention. A specialist will follow up with you soon.'
                 }])
-              } else if (event.type === 'complete') {
-                // Qualification complete
-                console.log('Qualification complete:', event.qualification)
+              } else if (event.type === 'complete' && event.qualification) {
+                setMessages(prev => [...prev, {
+                  role: 'assistant',
+                  content: '✅ Qualification saved. You will receive a recap email with next steps shortly.',
+                  tool_calls: [{
+                    tool: 'persist_qualification',
+                    result: event.qualification
+                  }]
+                }])
               } else if (event.type === 'error') {
                 setMessages(prev => [...prev, {
                   role: 'assistant',
@@ -447,4 +480,3 @@ export default function ChatPage() {
     </div>
   )
 }
-

@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from datetime import datetime
 
 from ..deps import get_db
@@ -59,6 +59,8 @@ async def list_leads(
     _auth: None = Depends(verify_optional_secret),
 ):
     """List leads with optional filters"""
+    filters = []
+
     query = select(Lead).options(
         joinedload(Lead.contact),
         joinedload(Lead.profile),
@@ -67,14 +69,22 @@ async def list_leads(
     if status:
         try:
             status_enum = LeadStatus(status)
-            query = query.where(Lead.status == status_enum)
+            filters.append(Lead.status == status_enum)
         except ValueError:
             raise HTTPException(
                 status_code=400, detail=f"Invalid status: {status}")
 
+    if filters:
+        query = query.where(*filters)
+
     query = query.limit(limit).offset(offset)
 
     leads = db.execute(query).scalars().all()
+    total = db.execute(
+        select(func.count()).select_from(Lead).where(*filters)
+        if filters
+        else select(func.count()).select_from(Lead)
+    ).scalar_one()
 
     return {
         "leads": [
@@ -92,7 +102,7 @@ async def list_leads(
             }
             for lead in leads
         ],
-        "total": len(leads),
+        "total": total,
         "limit": limit,
         "offset": offset,
     }

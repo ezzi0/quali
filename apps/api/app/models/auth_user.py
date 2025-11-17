@@ -21,7 +21,7 @@ class AuthUser(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     hashed_password: Mapped[Optional[str]] = mapped_column(String(255))
     role: Mapped[UserRole] = mapped_column(
-        Enum(UserRole, native_enum=False),
+        Enum(UserRole, native_enum=False, validate_strings=True),
         default=UserRole.AGENT,
         server_default="agent",
     )

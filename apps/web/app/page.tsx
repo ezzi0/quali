@@ -33,8 +33,10 @@ export default function LeadsInbox() {
       const url = filter 
         ? `${API_BASE}/leads?status=${filter}`
         : `${API_BASE}/leads`
-      
       const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Leads request failed with ${response.status}`)
+      }
       const data = await response.json()
       setLeads(data.leads || [])
     } catch (error) {
@@ -80,6 +82,7 @@ export default function LeadsInbox() {
             <Link href="/" style={{ fontWeight: '600' }}>Leads</Link>
             <Link href="/chat" style={{ color: '#6b7280' }}>AI Chat</Link>
             <Link href="/inventory" style={{ color: '#6b7280' }}>Inventory</Link>
+            <Link href="/marketing/personas" style={{ color: '#6b7280' }}>Marketing</Link>
             <Link href="/pipeline" style={{ color: '#6b7280' }}>Pipeline</Link>
           </nav>
         </div>
@@ -221,4 +224,3 @@ export default function LeadsInbox() {
     </div>
   )
 }
-

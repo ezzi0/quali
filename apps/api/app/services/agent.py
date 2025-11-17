@@ -58,7 +58,7 @@ class QualificationAgent:
     def __init__(self, db: Session):
         self.db = db
         self.client = OpenAI(api_key=settings.openai_api_key)
-        self.model = "gpt-5"  # Fast and cost-effective for most tasks
+        self.model = settings.openai_chat_model
 
         # Define instructions (from OpenAI guide: clear, actionable, edge-case aware)
         self.instructions = """You are a real estate lead qualification assistant.
@@ -379,7 +379,7 @@ Then STOP. Do not continue the conversation."""
         """
         try:
             response = self.client.chat.completions.create(
-                model="gpt-5",
+                model=self.model,
                 messages=[
                     {
                         "role": "system",
@@ -512,7 +512,7 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         ] + context.conversation_history
 
         # Call OpenAI with tools
-        # GPT-5 only supports temperature=1 (default), so we omit it
+        # Use model default temperature to reduce surprises across providers
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -645,10 +645,10 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                         "content": followup_message.content
                     })
 
-                    response_messages.append({
-                        "type": "message",
-                        "content": followup_message.content
-                    })
+                response_messages.append({
+                    "type": "text",
+                    "content": followup_message.content
+                })
                     break
 
                 # No content and no tools - exit loop
@@ -676,7 +676,7 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         })
 
         response_messages.append({
-            "type": "message",
+            "type": "text",
             "content": assistant_message.content
         })
 

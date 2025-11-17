@@ -1,6 +1,8 @@
 """Unit/inventory model"""
+from decimal import Decimal
 from sqlalchemy import String, Integer, Numeric, Enum, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.ext.mutable import MutableList
 from typing import Optional
 import enum
 
@@ -23,7 +25,7 @@ class Unit(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(255))
 
     # Pricing
-    price: Mapped[float] = mapped_column(Numeric(15, 2))
+    price: Mapped[Decimal] = mapped_column(Numeric(15, 2))
     currency: Mapped[str] = mapped_column(
         String(3), default="AED", server_default="AED")
 
@@ -43,14 +45,15 @@ class Unit(Base, TimestampMixin):
 
     # Status
     status: Mapped[UnitStatus] = mapped_column(
-        Enum(UnitStatus, native_enum=False),
+        Enum(UnitStatus, native_enum=False, validate_strings=True),
         default=UnitStatus.AVAILABLE,
         server_default="available",
         index=True,
     )
 
     # Features/amenities
-    features: Mapped[Optional[list[str]]] = mapped_column(ARRAY(String))
+    features: Mapped[Optional[list[str]]] = mapped_column(
+        MutableList.as_mutable(ARRAY(String)))
 
     # Description
     description: Mapped[Optional[str]] = mapped_column(String(2000))

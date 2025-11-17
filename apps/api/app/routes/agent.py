@@ -94,10 +94,10 @@ async def agent_turn(
                     yield f"data: {json.dumps({'type': 'tool_start', 'tool': msg['tool']})}\n\n"
                     yield f"data: {json.dumps({'type': 'tool_result', 'tool': msg['tool'], 'result': msg['result']})}\n\n"
 
-                elif msg.get("type") == "message":
+                elif msg.get("type") == "text":
                     # Assistant message - stream as complete message for faster response
                     content = msg["content"] or ""
-                    yield f"data: {json.dumps({'type': 'message', 'content': content})}\n\n"
+                    yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
 
             # Save session to Redis
             if context.session_id:
@@ -146,6 +146,7 @@ async def create_session(
     lead_id: int | None = None,
     email: str | None = None,
     phone: str | None = None,
+    session_id: str | None = None,
     redis = Depends(get_redis),
     _auth: None = Depends(verify_optional_secret),
 ):
@@ -158,7 +159,20 @@ async def create_session(
     import uuid
     
     session_store = SessionStore(redis)
-    
+    session_store = SessionStore(redis)
+
+    # Try to resume explicit session_id first
+    if session_id:
+        existing_context = session_store.get_session(session_id)
+        if existing_context:
+            logger.info("session_recovered_by_id", session_id=session_id)
+            return {
+                "session_id": session_id,
+                "lead_id": existing_context.get("lead_id"),
+                "context": existing_context,
+                "resumed": True
+            }
+
     # Try to recover session by email or phone
     if email:
         existing_context = session_store.get_session_by_email(email)
