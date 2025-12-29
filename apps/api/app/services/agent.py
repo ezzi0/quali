@@ -7,26 +7,33 @@ Built following OpenAI's Agent SDK best practices:
 - Guardrails (relevance, safety)
 - Session memory
 - Human-in-the-loop triggers
+
+Production readiness hardening:
+- Safe argument parsing (no eval)
+- Guardrails enabled (relevance + safety)
+- Retries/backoff around OpenAI calls
+- Basic state/status events for streaming
 """
 import json
-from typing import Dict, Any, List, Optional
+import time
+import uuid
+import re
+from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 # NOTE: OpenAI Agents SDK is in beta and not yet publicly released
 # For now, we'll use the patterns from their guide with standard OpenAI client
 # When SDK is available, this will be updated to use: from agents import Agent, Runner, function_tool
 
-from openai import OpenAI
-from pydantic import BaseModel, Field
+from openai import OpenAI, APIConnectionError, RateLimitError
+from pydantic import BaseModel, Field, ValidationError
 
 from ..config import get_settings
 from ..logging import get_logger
-from ..models.lead import Lead, LeadProfile, LeadStatus
-from ..models.qualification import Qualification
+from ..models.lead import Lead, LeadStatus, LeadSource
 from ..services import tools
-from ..services.scoring import lead_scorer
 from ..services.rag import knowledge_search
-from ..schemas.qualification import LeadQualification
+from ..telemetry import get_tracer, span
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -41,6 +48,7 @@ class AgentContext(BaseModel):
     collected_data: Dict[str, Any] = Field(default_factory=dict)
     tool_call_count: int = 0
     max_tool_calls: int = 10
+    state_version: int = 1  # bump if we change slot model
 
 
 class QualificationAgent:
@@ -57,64 +65,52 @@ class QualificationAgent:
 
     def __init__(self, db: Session):
         self.db = db
+        self.tracer = get_tracer("app.services.agent")
         self.client = OpenAI(api_key=settings.openai_api_key)
         self.model = settings.openai_chat_model
+        self.request_timeout = 30  # seconds
+        self.max_retries = 2
+        self.required_fields = [
+            "contact_name",
+            "persona",
+            "budget_max",
+            "move_in_date",
+            "city",
+            "areas",
+            "property_type",
+            "beds",
+            "contact_method",
+            "consent",
+        ]
+        self.min_budget_aed = 300000
+        self.deep_dive_budget_aed = 1000000
 
         # Define instructions (from OpenAI guide: clear, actionable, edge-case aware)
-        self.instructions = """You are a real estate lead qualification assistant.
+        self.instructions = """You are Gaussian, a real estate qualification assistant for Dubai off-plan buyers and investors.
 
-YOUR GOAL: Qualify leads by collecting complete information to match them with properties, then END the conversation gracefully.
+GOAL: Qualify fit quickly, gather essentials, then finish cleanly.
 
-INFORMATION TO COLLECT (REQUIRED):
-1. Persona: Are they a buyer, renter, or seller?
-2. Location: Which city and specific areas interest them?
-3. Property type: Apartment, villa, townhouse, etc.
-4. Bedrooms: How many bedrooms do they need?
-5. Budget: Price range they're comfortable with
-6. Timeline: When do they want to move?
-7. Financing: Pre-approved or need mortgage assistance?
-8. Contact: Full name, email, and phone number
-9. Consent: Permission to contact via email/SMS/WhatsApp
+FIT CHECK (required):
+1) Name
+2) Buyer or investor (no renters)
+3) Budget in AED (must be >= 300k)
+4) Timeline (urgency)
 
-OPTIONAL INFORMATION:
-- Size: Minimum square meters
-- Specific preferences or features
+MATCHING (once fit):
+5) Area(s) in Dubai
+6) Property type
+7) Bedrooms
 
-CONVERSATION GUIDELINES:
-- Ask ONE clear question at a time (maximum 2 related questions)
-- Be warm, friendly, and conversational
-- Use tools to search matching properties when you have enough criteria
-- Show relevant matches to build excitement (max 3 options)
-- If user mentions budget in text (e.g., "around 150k"), use normalize_budget tool
-- If user mentions areas, use geo_match to validate
-- If user asks about Agency 2.0, process, or has objections, use knowledge_search tool
+DEEPER (ask only if needed): financing (cash vs mortgage, pre-approval)
 
-CRITICAL - WHEN TO FINISH (3 steps):
-1. Once you have ALL REQUIRED information above, call save_lead_profile to save contact and profile data
-2. Then call lead_score to calculate quality
-3. Then call persist_qualification to save the results
-4. After persist_qualification is called, IMMEDIATELY end with: "Thank you [Name]! I've saved all your details. You'll receive a recap email shortly with the properties we discussed and next steps. [If high score: A specialist from our team will contact you within 24 hours to discuss these options further.] Have a great day!"
+CONTACT:
+Collect at least one of email or phone. Ask: "Is it ok to contact you on WhatsApp or email?"
 
-DO NOT ask any more questions after persist_qualification is called. The conversation MUST end.
-
-EDGE CASES:
-- If user provides vague budget ("flexible", "depends"), ask for a rough range
-- If user is unsure about areas, suggest 2-3 popular ones and use inventory_search
-- If conversation goes off-topic, politely redirect once
-- If user asks to stop or speak to a human, acknowledge and end immediately
-
-OUTPUT FORMAT AFTER QUALIFICATION:
-"Thank you [Name]! I've saved all your details. You'll receive a recap email shortly with:
-- Your property preferences
-- The [X] matching properties we discussed
-- Next steps for [viewing/mortgage/etc.]
-
-[If score >= 65: A senior specialist will contact you within 24 hours to help you move forward quickly.]
-[If score < 65: We'll review your requirements and be in touch soon with more options.]
-
-Have a great day!"
-
-Then STOP. Do not continue the conversation."""
+RULES:
+- Ask ONE question at a time.
+- Do not show inventory until fit-check + matching fields are complete.
+- After saving the lead and qualification, end with: "Thanks [Name]! A specialist will contact you within the next 30 minutes."
+"""
 
         # Define available tools
         self.tools = [
@@ -322,6 +318,142 @@ Then STOP. Do not continue the conversation."""
             }
         ]
 
+    def _parse_tool_arguments(self, raw_args: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Safely parse tool arguments from JSON string.
+
+        Returns (arguments_dict, error_message)
+        """
+        try:
+            parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            if not isinstance(parsed, dict):
+                return None, "Tool arguments must be a JSON object"
+            return parsed, None
+        except json.JSONDecodeError as e:
+            return None, f"Invalid tool arguments: {str(e)}"
+
+    def _update_collected_from_tool(self, tool_name: str, arguments: Dict[str, Any], tool_result: Any, context: AgentContext) -> None:
+        """
+        Update collected_data based on tool calls.
+        Provides the agent with state for slot-filling.
+        """
+        collected = context.collected_data
+
+        if tool_name == "save_lead_profile":
+            contact = arguments.get("contact", {})
+            profile = arguments.get("profile", {})
+            if contact:
+                collected["contact_name"] = contact.get("name")
+                collected["contact_email"] = contact.get("email")
+                collected["contact_phone"] = contact.get("phone")
+                collected["consent_email"] = contact.get("consent_email")
+                collected["consent_sms"] = contact.get("consent_sms")
+                collected["consent_whatsapp"] = contact.get("consent_whatsapp")
+            if profile:
+                collected["persona"] = profile.get("persona")
+                collected["city"] = profile.get("city")
+                collected["areas"] = profile.get("areas")
+                collected["property_type"] = profile.get("property_type")
+                collected["beds"] = profile.get("beds")
+                collected["budget_min"] = profile.get("budget_min")
+                collected["budget_max"] = profile.get("budget_max")
+                collected["move_in_date"] = profile.get("move_in_date")
+                collected["preapproved"] = profile.get("preapproved")
+        elif tool_name == "normalize_budget":
+            if isinstance(tool_result, dict):
+                collected["budget_min"] = tool_result.get("min") or collected.get("budget_min")
+                collected["budget_max"] = tool_result.get("max") or collected.get("budget_max")
+        elif tool_name == "geo_match":
+            if isinstance(tool_result, list) and tool_result:
+                collected["areas"] = tool_result
+        elif tool_name == "inventory_search":
+            if isinstance(tool_result, list):
+                collected["matches"] = tool_result
+        elif tool_name == "persist_qualification":
+            collected["qualification_saved"] = True
+
+        # Track top matches if provided
+        if isinstance(tool_result, dict) and "matches" in tool_result:
+            collected["top_matches_count"] = len(tool_result.get("matches", []))
+
+    def _missing_required_fields(self, collected: Dict[str, Any]) -> List[str]:
+        """Return list of missing required fields based on collected data."""
+        missing = []
+        for field in self.required_fields:
+            if field == "contact_method":
+                if not (collected.get("contact_email") or collected.get("contact_phone")):
+                    missing.append(field)
+                continue
+            if field == "consent":
+                if collected.get("consent_email") is None and collected.get("consent_whatsapp") is None:
+                    missing.append(field)
+                continue
+            val = collected.get(field)
+            if val is None or val == "" or val == []:
+                missing.append(field)
+        return missing
+
+    def _state_prompt(self, collected: Dict[str, Any]) -> str:
+        """Build a lightweight state summary to steer the model."""
+        missing = self._missing_required_fields(collected)
+        filled = [f for f in self.required_fields if f not in missing]
+        return (
+            "STATE UPDATE:\n"
+            f"- Missing fields: {missing if missing else 'none'}\n"
+            f"- Filled fields: {filled if filled else 'none'}\n"
+            "Ask for ONE missing field at a time. If all required fields are filled, proceed to save_lead_profile -> lead_score -> persist_qualification and then finish."
+        )
+
+    def _stream_text_completion(self, messages: List[Dict[str, Any]]) -> List[str]:
+        """
+        Stream a text-only completion for smoother token-level output.
+        Tool use is disabled in this path (tool_choice='none').
+        """
+        chunks: List[str] = []
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                timeout=self.request_timeout,
+            )
+            current = ""
+            for event in stream:
+                delta = event.choices[0].delta
+                if delta.content:
+                    current += delta.content
+                    # Emit small slices to keep UI responsive
+                    if len(current) >= 60:
+                        chunks.append(current)
+                        current = ""
+            if current:
+                chunks.append(current)
+        except Exception as e:
+            logger.error("stream_completion_failed", error=str(e))
+        return chunks
+
+    def _call_openai_with_retry(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None):
+        """Call OpenAI with simple retry/backoff for robustness."""
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=tools,
+                    timeout=self.request_timeout,
+                )
+            except (APIConnectionError, RateLimitError) as e:
+                last_error = e
+                backoff = 2 ** attempt
+                logger.warning("openai_retry", attempt=attempt + 1, backoff=backoff, error=str(e))
+                time.sleep(backoff)
+            except Exception as e:
+                last_error = e
+                logger.error("openai_call_failed", error=str(e))
+                break
+        raise last_error or RuntimeError("OpenAI call failed without explicit error")  # Propagate after retries
+
     def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Execute a tool call"""
         try:
@@ -378,8 +510,7 @@ Then STOP. Do not continue the conversation."""
         Returns dict with 'is_relevant' bool and 'reason' string.
         """
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = self._call_openai_with_retry(
                 messages=[
                     {
                         "role": "system",
@@ -402,8 +533,7 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                         "content": f"Is this message relevant to real estate qualification?\n\nMessage: {message}\n\nRespond with just 'relevant' or 'irrelevant' and brief reason."
                     }
                 ],
-                max_completion_tokens=50,
-                temperature=0
+                tools=None
             )
 
             result = response.choices[0].message.content.lower()
@@ -456,6 +586,281 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
             # Fail closed - assume unsafe if check fails
             return {"is_safe": False, "error": str(e)}
 
+    def _chunk_text(self, text: str, max_len: int = 60) -> List[str]:
+        """
+        Naive chunker to emit smaller SSE text events for smoother UI streaming.
+        """
+        if not text:
+            return []
+        words = text.split()
+        chunks = []
+        current = []
+        for w in words:
+            if sum(len(x) + 1 for x in current) + len(w) > max_len:
+                chunks.append(" ".join(current))
+                current = [w]
+            else:
+                current.append(w)
+        if current:
+            chunks.append(" ".join(current))
+        return chunks
+
+    def _extract_email_phone(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+        email_match = re.search(r'\b[\w\.-]+@[\w\.-]+\.\w+\b', text)
+        phone_match = re.search(r'\+?\d{10,15}', text.replace(" ", ""))
+        email = email_match.group(0) if email_match else None
+        phone = phone_match.group(0) if phone_match else None
+        return email, phone
+
+    def _extract_persona(self, text: str) -> Optional[str]:
+        lowered = text.lower()
+        if "rent" in lowered:
+            return "renter"
+        if "invest" in lowered:
+            return "investor"
+        if "buy" in lowered or "buyer" in lowered or "purchase" in lowered:
+            return "buyer"
+        return None
+
+    def _extract_property_type(self, text: str) -> Optional[str]:
+        lowered = text.lower()
+        if "apartment" in lowered or "flat" in lowered:
+            return "apartment"
+        if "villa" in lowered:
+            return "villa"
+        if "townhouse" in lowered:
+            return "townhouse"
+        if "studio" in lowered:
+            return "studio"
+        return None
+
+    def _extract_beds(self, text: str) -> Optional[int]:
+        lowered = text.lower()
+        if "studio" in lowered:
+            return 0
+        match = re.search(r'(\d+)\s*(bed|br)', lowered)
+        if match:
+            return int(match.group(1))
+        match = re.search(r'\b(\d+)\b', lowered)
+        if match:
+            value = int(match.group(1))
+            if 0 < value <= 10:
+                return value
+        return None
+
+    def _extract_timeline(self, text: str) -> Tuple[Optional[str], Optional[int]]:
+        lowered = text.lower()
+        if any(term in lowered for term in ["asap", "immediate", "right away", "now"]):
+            return "ASAP (0-3 months)", 1
+        month_match = re.search(r'(\d+)\s*month', lowered)
+        if month_match:
+            months = int(month_match.group(1))
+            return f"In {months} months", months
+        year_match = re.search(r'(\d+)\s*year', lowered)
+        if year_match:
+            months = int(year_match.group(1)) * 12
+            return f"In {year_match.group(1)} years", months
+        if "this year" in lowered:
+            return "Within 12 months", 12
+        if "next year" in lowered:
+            return "12+ months", 15
+        return None, None
+
+    def _extract_consent(self, text: str) -> Tuple[Optional[bool], Optional[bool]]:
+        lowered = text.lower()
+        if any(term in lowered for term in ["no", "don't", "do not", "stop"]):
+            return False, False
+        if "email" in lowered and "whatsapp" not in lowered:
+            return True, False
+        if "whatsapp" in lowered and "email" not in lowered:
+            return False, True
+        if any(term in lowered for term in ["yes", "ok", "okay", "sure", "fine"]):
+            return True, True
+        return None, None
+
+    def _extract_budget_from_text(self, text: str) -> Tuple[Optional[float], Optional[float]]:
+        if not re.search(r'\d', text):
+            return None, None
+        # Avoid treating phone numbers as budgets
+        if re.search(r'\b\d{9,}\b', text):
+            return None, None
+        result = tools.normalize_budget(text)
+        return result.get("min"), result.get("max")
+
+    def _normalize_areas(self, text: str) -> List[str]:
+        raw = text.replace("&", ",").replace(" and ", ",")
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        return [part.title() for part in parts]
+
+    def _ingest_message(self, message: str, context: AgentContext) -> None:
+        data = context.collected_data
+        text = message.strip()
+        if not text:
+            return
+
+        email, phone = self._extract_email_phone(text)
+        if email:
+            data["contact_email"] = email
+        if phone:
+            data["contact_phone"] = phone
+
+        last_question = data.get("last_question")
+
+        if last_question == "name" and not data.get("contact_name"):
+            if "@" not in text and not re.search(r'\d', text):
+                if 1 <= len(text.split()) <= 4:
+                    cleaned = re.sub(r'^(my name is|i am|i\'m)\s+', '', text, flags=re.IGNORECASE)
+                    data["contact_name"] = cleaned.strip().title()
+
+        persona = self._extract_persona(text)
+        if persona and not data.get("persona"):
+            data["persona"] = persona
+
+        if last_question == "persona" and persona:
+            data["persona"] = persona
+
+        budget_min, budget_max = self._extract_budget_from_text(text)
+        if budget_max:
+            data["budget_min"] = budget_min or 0
+            data["budget_max"] = budget_max
+
+        if last_question == "timeline" and not data.get("move_in_date"):
+            label, months = self._extract_timeline(text)
+            if label:
+                data["move_in_date"] = label
+                data["urgency_months"] = months
+
+        if not data.get("move_in_date"):
+            label, months = self._extract_timeline(text)
+            if label:
+                data["move_in_date"] = label
+                data["urgency_months"] = months
+
+        if last_question == "area":
+            areas = self._normalize_areas(text)
+            if areas:
+                data["areas"] = tools.geo_match(data.get("city") or "Dubai", areas)
+                data["city"] = data.get("city") or "Dubai"
+
+        if "dubai" in text.lower():
+            data["city"] = "Dubai"
+
+        property_type = self._extract_property_type(text)
+        if property_type and not data.get("property_type"):
+            data["property_type"] = property_type
+
+        beds = self._extract_beds(text)
+        if beds is not None and data.get("beds") is None:
+            data["beds"] = beds
+
+        if last_question == "financing":
+            lowered = text.lower()
+            if "cash" in lowered:
+                data["preapproved"] = True
+                data["financing_notes"] = "cash"
+            elif "mortgage" in lowered or "loan" in lowered:
+                data["financing_notes"] = "mortgage"
+                if "pre" in lowered and "approve" in lowered:
+                    data["preapproved"] = True
+                elif "not" in lowered:
+                    data["preapproved"] = False
+
+        if last_question == "consent":
+            consent_email, consent_whatsapp = self._extract_consent(text)
+            if consent_email is not None:
+                data["consent_email"] = consent_email
+            if consent_whatsapp is not None:
+                data["consent_whatsapp"] = consent_whatsapp
+
+    def _needs_financing_question(self, data: Dict[str, Any]) -> bool:
+        urgency = data.get("urgency_months")
+        budget_max = data.get("budget_max") or 0
+        persona = data.get("persona")
+        return bool(
+            (urgency and urgency <= 6)
+            or budget_max >= self.deep_dive_budget_aed
+            or persona == "investor"
+        )
+
+    def _next_action(self, context: AgentContext) -> Tuple[str, Optional[str]]:
+        data = context.collected_data
+
+        if not data.get("contact_name"):
+            return "ask", "name"
+
+        if not data.get("persona"):
+            return "ask", "persona"
+
+        if data.get("persona") == "renter":
+            return "ask", "persona_retry"
+
+        if not data.get("budget_max"):
+            return "ask", "budget"
+
+        if (data.get("budget_max") or 0) < self.min_budget_aed:
+            return "ask", "budget_too_low"
+
+        if not data.get("move_in_date"):
+            return "ask", "timeline"
+
+        if not data.get("areas"):
+            return "ask", "area"
+
+        if not data.get("property_type"):
+            return "ask", "property_type"
+
+        if data.get("beds") is None:
+            return "ask", "beds"
+
+        if self._needs_financing_question(data) and not data.get("financing_asked"):
+            data["financing_asked"] = True
+            return "ask", "financing"
+
+        if not data.get("matches"):
+            return "matches", None
+
+        if not (data.get("contact_email") or data.get("contact_phone")):
+            return "ask", "contact"
+
+        if data.get("consent_email") is None and data.get("consent_whatsapp") is None:
+            return "ask", "consent"
+
+        return "finalize", None
+
+    def _question_text(self, key: str) -> str:
+        questions = {
+            "name": "Welcome to Gaussian. What's your first name?",
+            "persona": "Are you buying a home or investing in Dubai off-plan?",
+            "persona_retry": "We only work with buyers and investors. Are you buying or investing?",
+            "budget": "What budget range in AED works for you?",
+            "budget_too_low": "We focus on opportunities above AED 300k. Is that within your range?",
+            "timeline": "When are you looking to buy? (0-3 / 3-6 / 6-12 / 12+ months)",
+            "area": "Which area(s) in Dubai are you considering?",
+            "property_type": "Apartment, villa, townhouse, or studio?",
+            "beds": "How many bedrooms do you need?",
+            "financing": "Will this be cash or mortgage? If mortgage, are you pre-approved?",
+            "contact": "What's the best email or phone number to reach you?",
+            "consent": "Is it ok to contact you on WhatsApp or email?",
+        }
+        return questions.get(key, "Could you share a bit more detail?")
+
+    def _ensure_lead(self, context: AgentContext) -> int:
+        if context.lead_id:
+            return context.lead_id
+        lead = Lead(source=LeadSource.WEB, status=LeadStatus.NEW)
+        self.db.add(lead)
+        self.db.commit()
+        self.db.refresh(lead)
+        context.lead_id = lead.id
+        return lead.id
+
+    def _final_message(self, name: Optional[str]) -> str:
+        display_name = name or "there"
+        return (
+            f"Thanks {display_name}! I've saved your details. "
+            "A specialist will contact you within the next 30 minutes."
+        )
+
     async def run(
         self,
         message: str,
@@ -471,34 +876,44 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         - qualification: Final qualification if complete
         """
 
-        # Guardrail 1: Relevance check (DISABLED for performance - add back in production with async)
-        # relevance = self._check_relevance_guardrail(message)
-        # if not relevance["is_relevant"]:
-        #     logger.warning("irrelevant_message", message=message,
-        #                   reason=relevance["reason"])
-        #     return {
-        #         "messages": [{
-        #             "role": "assistant",
-        #             "content": "I'm here to help you find the perfect property! Could you tell me what kind of property you're looking for?"
-        #         }],
-        #         "context": context,
-        #         "should_continue": True,
-        #         "qualification": None
-        #     }
+        run_id = str(uuid.uuid4())
+        logger.info("agent_run_start", run_id=run_id)
 
-        # Guardrail 2: Safety check (OPTIMIZED - lightweight check only)
-        safety = self._check_safety_guardrail(message)
-        if not safety["is_safe"]:
-            logger.warning("unsafe_message", message=message, safety=safety)
-            return {
-                "messages": [{
-                    "role": "assistant",
-                    "content": "I'm sorry, I cannot process that message. Let's focus on finding you a great property. What are you looking for?"
-                }],
-                "context": context,
-                "should_continue": True,
-                "qualification": None
-            }
+        with span(self.tracer, "agent.guardrails", {"run_id": run_id}):
+            # Guardrail 1: Relevance check
+            relevance = self._check_relevance_guardrail(message)
+            if not relevance["is_relevant"]:
+                logger.warning("irrelevant_message", message=message,
+                              reason=relevance["reason"])
+                return {
+                    "messages": [{
+                        "type": "status",
+                        "content": "Message not relevant to real estate; gently redirecting."
+                    }, {
+                        "role": "assistant",
+                        "content": "I'm here to help you find the perfect property! Could you tell me what kind of property you're looking for?"
+                    }],
+                    "context": context,
+                    "should_continue": True,
+                    "qualification": None
+                }
+
+            # Guardrail 2: Safety check (OPTIMIZED - lightweight check only)
+            safety = self._check_safety_guardrail(message)
+            if not safety["is_safe"]:
+                logger.warning("unsafe_message", message=message, safety=safety)
+                return {
+                    "messages": [{
+                        "type": "status",
+                        "content": "Message blocked for safety."
+                    }, {
+                        "role": "assistant",
+                        "content": "I'm sorry, I cannot process that message. Let's focus on finding you a great property. What are you looking for?"
+                    }],
+                    "context": context,
+                    "should_continue": True,
+                    "qualification": None
+                }
 
         # Add user message to history
         context.conversation_history.append({
@@ -506,18 +921,158 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
             "content": message
         })
 
+        # Update collected data from the latest user message
+        self._ingest_message(message, context)
+
+        action, payload = self._next_action(context)
+
+        if action == "ask":
+            question = self._question_text(payload or "")
+            context.collected_data["last_question"] = payload
+            context.conversation_history.append({
+                "role": "assistant",
+                "content": question
+            })
+            return {
+                "messages": [{
+                    "type": "text",
+                    "content": question
+                }],
+                "context": context,
+                "should_continue": True,
+                "qualification": None
+            }
+
+        if action == "matches":
+            data = context.collected_data
+            data["last_question"] = None
+            criteria = {
+                "city": data.get("city"),
+                "area": (data.get("areas") or [None])[0],
+                "property_type": data.get("property_type"),
+                "beds": data.get("beds"),
+                "min_price": data.get("budget_min"),
+                "max_price": data.get("budget_max"),
+                "limit": 3,
+            }
+            matches = tools.inventory_search(self.db, {k: v for k, v in criteria.items() if v is not None and v != ""})
+            data["matches"] = matches
+
+            context.conversation_history.append({
+                "role": "assistant",
+                "content": "Here are a few options that match what you shared:"
+            })
+            context.conversation_history.append({
+                "role": "tool",
+                "name": "inventory_search",
+                "content": str(matches),
+            })
+
+            return {
+                "messages": [
+                    {
+                        "type": "text",
+                        "content": "Here are a few options that match what you shared:"
+                    },
+                    {
+                        "type": "tool_call",
+                        "tool": "inventory_search",
+                        "arguments": criteria,
+                        "result": matches,
+                    },
+                ],
+                "context": context,
+                "should_continue": True,
+                "qualification": None,
+            }
+
+        if action == "finalize":
+            data = context.collected_data
+            data["last_question"] = None
+            lead_id = self._ensure_lead(context)
+
+            contact = {
+                "name": data.get("contact_name"),
+                "email": data.get("contact_email"),
+                "phone": data.get("contact_phone"),
+                "consent_email": data.get("consent_email", True),
+                "consent_sms": False,
+                "consent_whatsapp": data.get("consent_whatsapp", True),
+            }
+            profile = {
+                "persona": data.get("persona"),
+                "city": data.get("city"),
+                "areas": data.get("areas") or [],
+                "property_type": data.get("property_type"),
+                "beds": data.get("beds"),
+                "budget_min": data.get("budget_min"),
+                "budget_max": data.get("budget_max"),
+                "move_in_date": data.get("move_in_date"),
+                "preapproved": data.get("preapproved"),
+                "financing_notes": data.get("financing_notes"),
+                "preferences": data.get("preferences", []),
+            }
+
+            save_result = tools.save_lead_profile(self.db, lead_id, contact, profile)
+            score_result = tools.lead_score(profile, data.get("matches", []), contact)
+            persist_payload = {
+                "lead_id": lead_id,
+                "qualified": score_result.get("qualified", False),
+                "score": score_result.get("score", 0),
+                "reasons": score_result.get("reasons", []),
+                "missing_info": self._missing_required_fields(data),
+                "suggested_next_step": "A specialist will contact you within 30 minutes.",
+                "top_matches": data.get("matches", []),
+            }
+            persist_result = tools.persist_qualification(self.db, lead_id, persist_payload)
+
+            final_message = self._final_message(data.get("contact_name"))
+            context.conversation_history.append({
+                "role": "assistant",
+                "content": final_message
+            })
+
+            return {
+                "messages": [
+                    {
+                        "type": "tool_call",
+                        "tool": "save_lead_profile",
+                        "arguments": {"lead_id": lead_id, "contact": contact, "profile": profile},
+                        "result": save_result,
+                    },
+                    {
+                        "type": "tool_call",
+                        "tool": "lead_score",
+                        "arguments": {"profile": profile, "top_matches": data.get("matches", []), "contact": contact},
+                        "result": score_result,
+                    },
+                    {
+                        "type": "tool_call",
+                        "tool": "persist_qualification",
+                        "arguments": persist_payload,
+                        "result": persist_result,
+                    },
+                    {
+                        "type": "text",
+                        "content": final_message,
+                    },
+                ],
+                "context": context,
+                "should_continue": False,
+                "qualification": None,
+            }
+
         # Prepare messages for API call
+        state_prompt = self._state_prompt(context.collected_data)
         messages = [
-            {"role": "system", "content": self.instructions}
+            {"role": "system", "content": self.instructions},
+            {"role": "system", "content": state_prompt}
         ] + context.conversation_history
 
+        run_start = time.time()
         # Call OpenAI with tools
         # Use model default temperature to reduce surprises across providers
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=self.tools,
-        )
+        response = self._call_openai_with_retry(messages=messages, tools=self.tools)
 
         assistant_message = response.choices[0].message
         response_messages = []
@@ -547,7 +1102,7 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
 
                 # Check tool call limit (guardrail)
                 if context.tool_call_count > context.max_tool_calls:
-                    logger.warning("max_tool_calls_exceeded", context=context)
+                    logger.warning("max_tool_calls_exceeded", context=context, run_id=run_id)
                     return {
                         "messages": [{
                             "role": "assistant",
@@ -560,13 +1115,21 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                     }
 
                 tool_name = tool_call.function.name
-                # Safe because we control the tools
-                arguments = eval(tool_call.function.arguments)
+                parsed_args, parse_error = self._parse_tool_arguments(tool_call.function.arguments)
+                if parse_error:
+                    logger.error("tool_arguments_invalid", tool=tool_name, error=parse_error)
+                    response_messages.append({
+                        "type": "text",
+                        "content": f"Sorry, something went wrong while using {tool_name}. Let's try again."
+                    })
+                    continue
+                arguments = parsed_args
 
                 logger.info("tool_call", tool=tool_name, arguments=arguments)
 
                 # Execute tool
                 tool_result = self._execute_tool(tool_name, arguments)
+                self._update_collected_from_tool(tool_name, arguments, tool_result, context)
 
                 # Add tool response to history
                 context.conversation_history.append({
@@ -590,8 +1153,7 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
             for round_num in range(max_followup_rounds):
                 logger.info("calling_agent_after_tools", round=round_num + 1)
 
-                followup_response = self.client.chat.completions.create(
-                    model=self.model,
+                followup_response = self._call_openai_with_retry(
                     messages=context.conversation_history,
                     tools=self.tools,
                 )
@@ -619,7 +1181,15 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                     for tc in followup_message.tool_calls:
                         context.tool_call_count += 1
                         tool_name = tc.function.name
-                        arguments = json.loads(tc.function.arguments)
+                        parsed_args, parse_error = self._parse_tool_arguments(tc.function.arguments)
+                        if parse_error:
+                            logger.error("tool_arguments_invalid", tool=tool_name, error=parse_error)
+                            response_messages.append({
+                                "type": "text",
+                                "content": f"Sorry, something went wrong while using {tool_name}. Let's try again."
+                            })
+                            continue
+                        arguments = parsed_args
                         tool_result = self._execute_tool(tool_name, arguments)
 
                         context.conversation_history.append({
@@ -640,16 +1210,20 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
 
                 # Got text response!
                 if followup_message.content:
-                    context.conversation_history.append({
-                        "role": "assistant",
-                        "content": followup_message.content
-                    })
-
-                response_messages.append({
-                    "type": "text",
-                    "content": followup_message.content
-                })
-                    break
+                    # Prefer streaming for text-only follow-up
+                    streamed_chunks = self._stream_text_completion(context.conversation_history)
+                    if not streamed_chunks:
+                        streamed_chunks = self._chunk_text(followup_message.content)
+                    for chunk in streamed_chunks:
+                        context.conversation_history.append({
+                            "role": "assistant",
+                            "content": chunk
+                        })
+                        response_messages.append({
+                            "type": "text",
+                            "content": chunk
+                        })
+                break
 
                 # No content and no tools - exit loop
                 logger.warning("empty_followup_response", round=round_num)
@@ -670,21 +1244,34 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
             }
 
         # No tool calls - final response
-        context.conversation_history.append({
-            "role": "assistant",
-            "content": assistant_message.content
-        })
+        streamed_chunks = self._stream_text_completion(messages) if assistant_message.content else []
+        if not streamed_chunks and assistant_message.content:
+            streamed_chunks = self._chunk_text(assistant_message.content)
 
-        response_messages.append({
-            "type": "text",
-            "content": assistant_message.content
-        })
+        for chunk in streamed_chunks:
+            context.conversation_history.append({
+                "role": "assistant",
+                "content": chunk
+            })
+            response_messages.append({
+                "type": "text",
+                "content": chunk
+            })
 
         # Check if qualification was persisted (end condition)
         qualification_persisted = any(
             msg.get("role") == "tool" and msg.get(
                 "name") == "persist_qualification"
             for msg in context.conversation_history
+        )
+
+        logger.info(
+            "agent_run_complete",
+            run_id=run_id,
+            duration=round(time.time() - run_start, 3),
+            tool_calls=context.tool_call_count,
+            missing_fields=self._missing_required_fields(context.collected_data),
+            should_continue=not qualification_persisted
         )
 
         return {

@@ -13,7 +13,8 @@ from sqlalchemy import select, func
 
 from ...config import get_settings
 from ...logging import get_logger
-from ...models import Campaign, AdSet, MarketingMetric
+from ...models import Campaign, AdSet, MarketingMetric, CampaignPlatform
+from ...adapters.meta_marketing import MetaMarketingAdapter
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -150,10 +151,11 @@ class BudgetOptimizerService:
         
         return recommendations
     
-    def apply_recommendations(
+    async def apply_recommendations(
         self,
         recommendations: List[BudgetRecommendation],
-        auto_approve: bool = False
+        auto_approve: bool = False,
+        push_to_platform: bool = True
     ) -> int:
         """
         Apply budget recommendations to ad sets.
@@ -161,11 +163,13 @@ class BudgetOptimizerService:
         Args:
             recommendations: List of budget changes
             auto_approve: If True, apply immediately. If False, mark for review.
+            push_to_platform: If True, sync to ad platforms when IDs exist.
         
         Returns:
             Number of ad sets updated
         """
         updated = 0
+        platform_updates = 0
         
         for rec in recommendations:
             ad_set = self.db.get(AdSet, rec.ad_set_id)
@@ -177,12 +181,29 @@ class BudgetOptimizerService:
                     "optimization_rationale": rec.rationale
                 }
                 updated += 1
+                
+                if push_to_platform and ad_set.campaign and ad_set.campaign.platform == CampaignPlatform.META and ad_set.platform_adset_id:
+                    pushed = await self._push_meta_budget(ad_set.platform_adset_id, rec.recommended_budget)
+                    if pushed:
+                        platform_updates += 1
         
         self.db.commit()
         
-        logger.info("budget_recommendations_applied", count=updated)
+        logger.info("budget_recommendations_applied", count=updated, platform_updates=platform_updates)
         
         return updated
+
+    async def _push_meta_budget(self, platform_adset_id: str, new_budget: float) -> bool:
+        """Sync budget change to Meta. Returns True on success."""
+        try:
+            adapter = MetaMarketingAdapter(
+                dry_run=not (settings.meta_access_token and settings.meta_ad_account_id)
+            )
+            await adapter.update_ad_set_budget(platform_adset_id, new_budget)
+            return True
+        except Exception as e:
+            logger.warning("meta_budget_push_failed", adset_id=platform_adset_id, error=str(e))
+            return False
     
     def _fetch_performance(
         self,
@@ -306,4 +327,3 @@ class BudgetOptimizerService:
             return 0.8
         else:
             return 0.95
-

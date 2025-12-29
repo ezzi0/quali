@@ -60,3 +60,6 @@ htmlcov/
 # Alembic
 apps/api/alembic/versions/*.pyc
 
+# Media uploads
+apps/api/uploads/*
+!apps/api/uploads/.gitkeep

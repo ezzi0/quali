@@ -1,5 +1,8 @@
 """Agent tools for OpenAI Agents SDK"""
 import re
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -8,10 +11,15 @@ from ..models.unit import Unit, UnitStatus
 from ..models.lead import Lead, LeadProfile, LeadPersona, LeadStatus
 from ..models.qualification import Qualification
 from ..models.contact import Contact
+from ..models.task import Task, TaskStatus
+from ..models.activity import Activity, ActivityType
+from ..models.auth_user import AuthUser, UserRole
+from ..config import get_settings
 from .scoring import lead_scorer
 from ..logging import get_logger
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 def inventory_search(
@@ -24,7 +32,10 @@ def inventory_search(
     If no exact matches, tries with relaxed criteria (e.g., +/- 2 beds, higher price range).
     """
     def build_query(criteria_dict, exact_beds=True):
-        query = select(Unit).where(Unit.status == UnitStatus.AVAILABLE)
+        query = select(Unit).where(
+            Unit.status == UnitStatus.AVAILABLE,
+            Unit.active.is_(True),
+        )
 
         if location := criteria_dict.get("location"):
             query = query.where(Unit.location.ilike(f"%{location}%"))
@@ -94,12 +105,23 @@ def inventory_search(
         {
             "unit_id": unit.id,
             "title": unit.title,
+            "slug": unit.slug,
+            "developer": unit.developer,
+            "image_url": unit.image_url,
             "price": float(unit.price),
             "currency": unit.currency,
+            "price_display": unit.price_display,
+            "payment_plan": unit.payment_plan,
             "area_m2": unit.area_m2,
             "beds": unit.beds,
+            "bedrooms_label": unit.bedrooms_label,
+            "unit_sizes": unit.unit_sizes,
             "location": unit.location,
             "property_type": unit.property_type,
+            "handover": unit.handover,
+            "handover_year": unit.handover_year,
+            "roi": unit.roi,
+            "featured": unit.featured,
             "features": unit.features or [],
         }
         for unit in units
@@ -207,8 +229,8 @@ def save_lead_profile(
         if lead:
             lead.contact_id = contact_obj.id
             # Set persona if provided
-            persona_str = profile.get("persona", "").lower()
-            if persona_str in ["buyer", "renter", "seller"]:
+            persona_str = (profile.get("persona") or "").lower()
+            if persona_str in ["buyer", "renter", "seller", "investor"]:
                 lead.persona = LeadPersona(persona_str)
         
         # 3. Create or update LeadProfile
@@ -327,6 +349,47 @@ def persist_qualification(
                 # Low-quality - nurture
                 lead.status = LeadStatus.NURTURE
 
+        assignee_email = None
+        if lead and not lead.assigned_to:
+            agent = (
+                db.query(AuthUser)
+                .filter(AuthUser.role == UserRole.AGENT)
+                .order_by(AuthUser.created_at.asc())
+                .first()
+            )
+            if not agent:
+                agent = (
+                    db.query(AuthUser)
+                    .filter(AuthUser.role == UserRole.ADMIN)
+                    .order_by(AuthUser.created_at.asc())
+                    .first()
+                )
+            if agent:
+                lead.assigned_to = agent.email
+                assignee_email = agent.email
+        elif lead:
+            assignee_email = lead.assigned_to
+
+        if lead and assignee_email:
+            due_at = datetime.utcnow() + timedelta(minutes=30)
+            db.add(
+                Task(
+                    lead_id=lead.id,
+                    title="Follow up qualified lead",
+                    description="Contact the lead within 30 minutes.",
+                    due_at=due_at,
+                    status=TaskStatus.TODO,
+                    assignee=assignee_email,
+                )
+            )
+            db.add(
+                Activity(
+                    lead_id=lead.id,
+                    type=ActivityType.NOTE,
+                    payload={"event": "lead_assigned", "assignee": assignee_email},
+                )
+            )
+
         db.commit()
 
         # Send email recap if contact has email
@@ -343,6 +406,15 @@ def persist_qualification(
             except Exception as email_error:
                 logger.error("recap_email_failed", lead_id=lead_id, error=str(email_error))
 
+        agent_notified = False
+        if lead and assignee_email:
+            agent_notified = _send_agent_notification_email(
+                agent_email=assignee_email,
+                lead=lead,
+                contact=lead.contact if lead else None,
+                profile=lead.profile if lead else None,
+            )
+
         logger.info(
             "qualification_persisted",
             lead_id=lead_id,
@@ -350,6 +422,7 @@ def persist_qualification(
             qualified=qualified,
             high_score=score >= 65,
             email_sent=email_sent,
+            agent_notified=agent_notified,
         )
 
         return {
@@ -358,7 +431,8 @@ def persist_qualification(
             "score": score,
             "high_score": score >= 65,
             "email_sent": email_sent,
-            "message": f"Qualification saved. Score: {score}/100. {'High-priority lead - will be contacted by specialist within 24 hours.' if score >= 65 else 'Lead qualified and will be reviewed.'}"
+            "agent_notified": agent_notified,
+            "message": f"Qualification saved. Score: {score}/100. {'High-priority lead - will be contacted by specialist within 30 minutes.' if score >= 65 else 'Lead qualified and will be reviewed.'}"
         }
 
     except Exception as e:
@@ -425,7 +499,7 @@ def _send_qualification_recap_email(
         next_steps_html = """
         <h2>Next Steps</h2>
         <p><strong>Great news!</strong> Based on your requirements, you're a priority client. 
-        A senior property specialist will contact you within 24 hours to:</p>
+        A senior property specialist will contact you within 30 minutes to:</p>
         <ul>
             <li>Schedule property viewings</li>
             <li>Assist with mortgage pre-approval (if needed)</li>
@@ -492,3 +566,50 @@ def _send_qualification_recap_email(
     # response = sg.send(message)
     
     logger.info("email_would_be_sent_in_production", to=contact.email, subject=subject)
+
+
+def _send_agent_notification_email(
+    agent_email: str,
+    lead: Lead,
+    contact: Contact | None,
+    profile: LeadProfile | None,
+) -> bool:
+    if not settings.smtp_host or not settings.smtp_from:
+        logger.info(
+            "agent_notification_email_skipped",
+            reason="smtp_not_configured",
+            to=agent_email,
+            lead_id=lead.id,
+        )
+        return False
+
+    subject = f"New qualified lead: {contact.name if contact and contact.name else 'New lead'}"
+    body = [
+        f"Lead ID: {lead.id}",
+        f"Name: {contact.name if contact else 'Unknown'}",
+        f"Email: {contact.email if contact else 'N/A'}",
+        f"Phone: {contact.phone if contact else 'N/A'}",
+        f"Persona: {lead.persona.value if lead.persona else 'N/A'}",
+        f"Budget: {profile.budget_min if profile and profile.budget_min else ''} - {profile.budget_max if profile and profile.budget_max else ''}",
+        f"Areas: {', '.join(profile.areas) if profile and profile.areas else 'N/A'}",
+        f"Timeline: {profile.move_in_date if profile else 'N/A'}",
+    ]
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = settings.smtp_from
+    message["To"] = agent_email
+    message.set_content("\n".join(body))
+
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+            if settings.smtp_use_tls:
+                server.starttls()
+            if settings.smtp_user and settings.smtp_password:
+                server.login(settings.smtp_user, settings.smtp_password)
+            server.send_message(message)
+        logger.info("agent_notification_sent", to=agent_email, lead_id=lead.id)
+        return True
+    except Exception as exc:
+        logger.error("agent_notification_failed", to=agent_email, error=str(exc))
+        return False

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # Database
     database_url: str = os.getenv(
         "DATABASE_URL",
-        "postgresql://dev:dev@localhost:5432/app"
+        "postgresql+psycopg://dev:dev@localhost:5432/app"
     )
 
     # Redis
@@ -29,9 +29,23 @@ class Settings(BaseSettings):
     # Optional auth
     app_secret: str | None = os.getenv("APP_SECRET")
 
+    # Supabase auth (invite-only admin portal)
+    supabase_url: str | None = os.getenv("SUPABASE_URL")
+    supabase_service_role_key: str | None = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    supabase_jwt_audience: str = os.getenv("SUPABASE_JWT_AUD", "authenticated")
+    supabase_storage_bucket: str = os.getenv("SUPABASE_STORAGE_BUCKET", "media")
+
     # App
     environment: str = os.getenv("ENVIRONMENT", "development")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    cors_allow_origins: str = os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    )
+
+    # Media uploads
+    media_dir: str = os.getenv("MEDIA_DIR", "uploads")
+    media_url: str = os.getenv("MEDIA_URL", "/uploads")
     
     # Marketing - Meta
     meta_app_id: str | None = os.getenv("META_APP_ID")
@@ -56,9 +70,18 @@ class Settings(BaseSettings):
     ga4_measurement_id: str | None = os.getenv("GA4_MEASUREMENT_ID")
     ga4_api_secret: str | None = os.getenv("GA4_API_SECRET")
 
+    # Email (optional SMTP)
+    smtp_host: str | None = os.getenv("SMTP_HOST")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str | None = os.getenv("SMTP_USER")
+    smtp_password: str | None = os.getenv("SMTP_PASSWORD")
+    smtp_from: str | None = os.getenv("SMTP_FROM")
+    smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 @lru_cache

@@ -9,11 +9,11 @@ from .task import Task
 from .session import Session
 from .auth_user import AuthUser
 # Marketing models
-from .persona import Persona
-from .audience import Audience
-from .creative import Creative
-from .campaign import Campaign, AdSet, Ad
-from .experiment import Experiment
+from .persona import Persona, PersonaStatus
+from .audience import Audience, AudiencePlatform, AudienceStatus
+from .creative import Creative, CreativeFormat, CreativeStatus
+from .campaign import Campaign, AdSet, Ad, CampaignPlatform, CampaignObjective, CampaignStatus
+from .experiment import Experiment, ExperimentStatus, ExperimentType
 from .marketing_metric import MarketingMetric
 
 __all__ = [
@@ -29,11 +29,21 @@ __all__ = [
     "AuthUser",
     # Marketing
     "Persona",
+    "PersonaStatus",
     "Audience",
+    "AudiencePlatform",
+    "AudienceStatus",
     "Creative",
+    "CreativeFormat",
+    "CreativeStatus",
     "Campaign",
     "AdSet",
     "Ad",
+    "CampaignPlatform",
+    "CampaignObjective",
+    "CampaignStatus",
     "Experiment",
+    "ExperimentStatus",
+    "ExperimentType",
     "MarketingMetric",
 ]

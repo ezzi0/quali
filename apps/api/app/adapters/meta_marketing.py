@@ -7,6 +7,7 @@ Supports campaigns, ad sets, ads, and audience creation with CAPI integration.
 from typing import Dict, Any, List, Optional
 import time
 import httpx
+import asyncio
 from datetime import datetime
 
 from ..config import get_settings
@@ -46,6 +47,28 @@ class MetaMarketingAdapter:
         
         if not self.access_token:
             logger.warning("meta_no_access_token")
+
+    async def _request_with_retry(self, method: str, url: str, json_body: dict | None = None, max_retries: int = 2, timeout: float = 30.0):
+        """
+        Simple retry/backoff for Meta API calls to handle transient errors and rate limits.
+        """
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.request(method, url, json=json_body)
+                    if response.status_code in (429, 500, 502, 503):
+                        raise httpx.HTTPStatusError(
+                            f"Meta returned {response.status_code}", request=response.request, response=response
+                        )
+                    response.raise_for_status()
+                    return response.json()
+            except Exception as e:
+                last_error = e
+                backoff = 2 ** attempt
+                logger.warning("meta_request_retry", attempt=attempt + 1, backoff=backoff, url=url, error=str(e))
+                await asyncio.sleep(backoff)
+        raise last_error
     
     async def create_campaign(
         self,
@@ -83,13 +106,11 @@ class MetaMarketingAdapter:
         if budget_daily:
             params["daily_budget"] = int(budget_daily * 100)  # Convert to cents
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self.BASE_URL}/{self.ad_account_id}/campaigns",
-                json=params
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._request_with_retry(
+            "POST",
+            f"{self.BASE_URL}/{self.ad_account_id}/campaigns",
+            json_body=params
+        )
         
         logger.info("meta_campaign_created", campaign_id=data.get("id"), name=name)
         
@@ -135,16 +156,42 @@ class MetaMarketingAdapter:
             "access_token": self.access_token
         }
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self.BASE_URL}/{self.ad_account_id}/adsets",
-                json=params
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._request_with_retry(
+            "POST",
+            f"{self.BASE_URL}/{self.ad_account_id}/adsets",
+            json_body=params
+        )
         
         logger.info("meta_adset_created", adset_id=data.get("id"), name=name)
         
+        return data
+    
+    async def update_ad_set_budget(
+        self,
+        adset_id: str,
+        budget_daily: float,
+        status: str = "ACTIVE"
+    ) -> Dict[str, Any]:
+        """
+        Update ad set daily budget. Real call unless dry_run is enabled.
+        """
+        if self.dry_run:
+            logger.info("meta_update_adset_budget_dry_run", adset_id=adset_id, budget=budget_daily)
+            return {"id": adset_id, "daily_budget": budget_daily}
+
+        params = {
+            "daily_budget": int(budget_daily * 100),
+            "status": status,
+            "access_token": self.access_token
+        }
+
+        data = await self._request_with_retry(
+            "POST",
+            f"{self.BASE_URL}/{adset_id}",
+            json_body=params
+        )
+
+        logger.info("meta_adset_budget_updated", adset_id=adset_id, budget=budget_daily)
         return data
     
     async def create_ad(
@@ -181,13 +228,11 @@ class MetaMarketingAdapter:
             "access_token": self.access_token
         }
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self.BASE_URL}/{self.ad_account_id}/ads",
-                json=params
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._request_with_retry(
+            "POST",
+            f"{self.BASE_URL}/{self.ad_account_id}/ads",
+            json_body=params
+        )
         
         logger.info("meta_ad_created", ad_id=data.get("id"), name=name)
         
@@ -203,13 +248,11 @@ class MetaMarketingAdapter:
             "access_token": self.access_token
         }
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{self.BASE_URL}/{self.ad_account_id}/adcreatives",
-                json=params
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await self._request_with_retry(
+            "POST",
+            f"{self.BASE_URL}/{self.ad_account_id}/adcreatives",
+            json_body=params
+        )
         
         return data["id"]
     
@@ -319,4 +362,3 @@ class MetaMarketingAdapter:
             "ctr": "3.6",
             "cpc": "0.56"
         }]
-

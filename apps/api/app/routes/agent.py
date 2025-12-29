@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..deps import get_db, get_redis
-from ..auth import verify_optional_secret
 from ..logging import get_logger
 from ..services.agent import QualificationAgent, AgentContext
 from ..services.session_store import SessionStore
@@ -42,7 +41,6 @@ async def agent_turn(
     request: AgentTurnRequest,
     db: Session = Depends(get_db),
     redis = Depends(get_redis),
-    _auth: None = Depends(verify_optional_secret),
 ):
     """
     Process agent turn with proper Agent SDK patterns.
@@ -55,6 +53,20 @@ async def agent_turn(
     - Structured output
     - Session recovery by email/phone
     """
+
+    if not settings.openai_api_key:
+        async def missing_key():
+            yield f"data: {json.dumps({'type': 'error', 'message': 'OPENAI_API_KEY is not configured. Add it to the API environment and restart the server.'})}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            missing_key(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
 
     # Initialize agent and session store
     agent = QualificationAgent(db)
@@ -89,14 +101,17 @@ async def agent_turn(
 
             # Stream messages
             for msg in result["messages"]:
-                if msg.get("type") == "tool_call":
+                msg_type = msg.get("type")
+                if msg_type == "status":
+                    yield f"data: {json.dumps({'type': 'status', 'content': msg.get('content')})}\n\n"
+                elif msg_type == "tool_call":
                     # Tool call event
                     yield f"data: {json.dumps({'type': 'tool_start', 'tool': msg['tool']})}\n\n"
                     yield f"data: {json.dumps({'type': 'tool_result', 'tool': msg['tool'], 'result': msg['result']})}\n\n"
 
-                elif msg.get("type") == "text":
+                elif msg_type == "text" or msg.get("role") == "assistant":
                     # Assistant message - stream as complete message for faster response
-                    content = msg["content"] or ""
+                    content = msg.get("content") or ""
                     yield f"data: {json.dumps({'type': 'text', 'content': content})}\n\n"
 
             # Save session to Redis
@@ -148,7 +163,6 @@ async def create_session(
     phone: str | None = None,
     session_id: str | None = None,
     redis = Depends(get_redis),
-    _auth: None = Depends(verify_optional_secret),
 ):
     """
     Create or recover a chat session
@@ -202,6 +216,9 @@ async def create_session(
         lead_id=lead_id,
         session_id=session_id
     )
+    greeting = "Welcome to Gaussian. What's your first name?"
+    context.conversation_history.append({"role": "assistant", "content": greeting})
+    context.collected_data["last_question"] = "name"
     
     # Save to Redis
     session_store.save_session(session_id, context.dict())

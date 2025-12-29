@@ -1,0 +1,318 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Abriqot Design System
+   Primary Apricot: #FFA927
+   Secondary Orange: #FF7E27
+   Secondary Gray: #DADADA
+   Secondary Dark: #64262C
+   Clean, minimalist, investor-grade
+*/
+
+@layer base {
+  :root {
+    /* Light mode - Pure white with apricot accent */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+
+    --primary: 38 100% 58%; /* #FFA927 */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 96%; /* Light gray */
+    --secondary-foreground: 0 0% 10%;
+
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;
+
+    --accent: 21 100% 56%; /* #FF7E27 */
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 354 45% 27%; /* #64262C */
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 90%;
+    --input: 0 0% 90%;
+    --ring: 38 100% 58%;
+
+    --radius: 0.75rem;
+
+    /* Brand tokens */
+    --apricot: 38 100% 58%;
+    --orange: 21 100% 56%;
+    --gray: 0 0% 86%;
+    --dark: 354 45% 27%;
+
+    --font-sans: 'Space Grotesk', system-ui, sans-serif;
+  }
+
+  .dark {
+    /* Dark mode - Pure neutral blacks/grays only, no maroon or colored grays */
+    --background: 0 0% 5%;
+    --foreground: 0 0% 98%;
+
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 38 100% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 60%;
+
+    --accent: 21 100% 56%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 60% 50%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 0 0% 15%;
+    --input: 0 0% 15%;
+    --ring: 38 100% 58%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-sans);
+    @apply font-semibold tracking-tight;
+  }
+}
+
+@layer components {
+  /* Container utilities */
+  .container-narrow {
+    @apply max-w-3xl mx-auto px-6;
+  }
+
+  .container-wide {
+    @apply max-w-6xl mx-auto px-6 lg:px-8;
+  }
+
+  .section-padding {
+    @apply py-20 md:py-28 lg:py-36;
+  }
+
+  /* Typography */
+  .heading-1 {
+    @apply text-4xl md:text-5xl lg:text-6xl font-semibold leading-[1.1] tracking-tight;
+  }
+
+  .heading-2 {
+    @apply text-3xl md:text-4xl font-semibold leading-tight;
+  }
+
+  .heading-3 {
+    @apply text-2xl md:text-3xl font-semibold leading-snug;
+  }
+
+  .heading-4 {
+    @apply text-xl md:text-2xl font-medium;
+  }
+
+  .body-large {
+    @apply text-lg md:text-xl leading-relaxed;
+  }
+
+  /* Buttons - Luxury minimal */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl;
+    @apply bg-primary text-primary-foreground font-medium;
+    @apply hover:brightness-110 transition-all duration-200;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl;
+    @apply bg-secondary text-secondary-foreground font-medium;
+    @apply border border-border hover:bg-muted transition-all duration-200;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg;
+    @apply text-foreground/80 hover:text-foreground hover:bg-muted/50 transition-all duration-200;
+  }
+
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl;
+    @apply border border-border text-foreground font-medium;
+    @apply hover:border-primary hover:text-primary transition-all duration-200;
+  }
+
+  /* Cards - subtle borders, no heavy shadows */
+  .card-luxury {
+    @apply bg-card rounded-2xl border border-border p-6;
+    @apply transition-all duration-300;
+  }
+
+  .card-luxury:hover {
+    @apply border-primary/30;
+  }
+
+  /* Forms */
+  .form-input {
+    @apply w-full px-4 py-3 rounded-xl bg-muted/50 border border-border;
+    @apply focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none;
+    @apply placeholder:text-muted-foreground transition-all duration-200;
+  }
+
+  .form-label {
+    @apply block text-sm font-medium mb-2 text-foreground/80;
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    @apply h-1 bg-muted rounded-full overflow-hidden;
+  }
+
+  .progress-bar-fill {
+    @apply h-full bg-primary rounded-full transition-all duration-500;
+  }
+
+  /* Trust badge */
+  .trust-badge {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-full;
+    @apply bg-primary/10 text-primary text-sm font-medium;
+  }
+
+  /* Mobile sticky CTA */
+  .mobile-sticky-cta {
+    @apply fixed bottom-0 left-0 right-0 z-40 md:hidden;
+    @apply bg-background/95 backdrop-blur-md border-t border-border;
+    @apply p-4 safe-area-inset-bottom;
+  }
+
+  /* WhatsApp float */
+  .whatsapp-float {
+    @apply fixed bottom-6 right-6 z-50;
+    @apply bg-[#25D366] text-white p-4 rounded-full;
+    @apply shadow-lg hover:scale-105 transition-transform duration-200;
+  }
+}
+
+@layer utilities {
+  .animate-fade-up {
+    animation: fadeUp 0.6s ease-out forwards;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.4s ease-out forwards;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  .animate-slow-zoom {
+    animation: slowZoom 20s ease-out forwards;
+  }
+
+  .animate-pulse-slow {
+    animation: pulseSlow 4s ease-in-out infinite;
+  }
+
+  .animate-pulse-slower {
+    animation: pulseSlow 6s ease-in-out infinite;
+    animation-delay: 1s;
+  }
+
+  .stagger-1 { animation-delay: 100ms; }
+  .stagger-2 { animation-delay: 200ms; }
+  .stagger-3 { animation-delay: 400ms; }
+
+  .safe-area-inset-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slowZoom {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.1);
+  }
+}
+
+@keyframes pulseSlow {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
+}
+
+/* Scrollbar - minimal */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}

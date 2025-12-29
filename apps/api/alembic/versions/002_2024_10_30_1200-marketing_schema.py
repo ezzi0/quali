@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '002_marketing'
-down_revision = '001_2024_10_22_1200-initial_schema'
+down_revision = '001'
 branch_labels = None
 depends_on = None
 
@@ -273,4 +273,3 @@ def downgrade() -> None:
     
     op.drop_index('idx_personas_status', table_name='personas')
     op.drop_table('personas')
-

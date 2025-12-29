@@ -1,6 +1,7 @@
 """Lead and LeadProfile models"""
 from decimal import Decimal
-from sqlalchemy import String, Integer, ForeignKey, Enum, ARRAY, Numeric, Boolean
+from datetime import datetime
+from sqlalchemy import String, Integer, ForeignKey, Enum, ARRAY, Numeric, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.ext.mutable import MutableDict, MutableList
@@ -22,6 +23,7 @@ class LeadPersona(str, enum.Enum):
     BUYER = "buyer"
     RENTER = "renter"
     SELLER = "seller"
+    INVESTOR = "investor"
 
 
 class LeadStatus(str, enum.Enum):
@@ -50,6 +52,10 @@ class Lead(Base, TimestampMixin):
         default=LeadStatus.NEW,
         server_default="new",
     )
+
+    notes: Mapped[Optional[str]] = mapped_column(String(2000))
+    assigned_to: Mapped[Optional[str]] = mapped_column(String(255))
+    last_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     contact_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("contacts.id", ondelete="SET NULL"))

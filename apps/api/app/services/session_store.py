@@ -124,8 +124,14 @@ class SessionStore:
         
         # Check collected_data first
         if "collected_data" in context:
-            email = context["collected_data"].get("email")
-            phone = context["collected_data"].get("phone")
+            email = (
+                context["collected_data"].get("contact_email")
+                or context["collected_data"].get("email")
+            )
+            phone = (
+                context["collected_data"].get("contact_phone")
+                or context["collected_data"].get("phone")
+            )
         
         # Also scan conversation history for patterns
         if not email or not phone:
@@ -146,4 +152,3 @@ class SessionStore:
                             phone = phone_match.group(0)
         
         return {"email": email, "phone": phone}
-

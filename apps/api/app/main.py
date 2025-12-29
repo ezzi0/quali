@@ -1,9 +1,11 @@
 """FastAPI application entry point"""
-from .routes import agent, leads, inventory, webhooks, marketing, monitoring
+from .routes import agent, leads, inventory, webhooks, marketing, monitoring, admin, media
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pathlib import Path
 import time
 
 from .config import get_settings
@@ -42,11 +44,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+media_url = settings.media_url or "/uploads"
+media_url = f"/{media_url.lstrip('/')}"
+media_dir = Path(settings.media_dir)
+media_dir.mkdir(parents=True, exist_ok=True)
+app.mount(media_url, StaticFiles(directory=media_dir), name="uploads")
+
 # CORS middleware
+def parse_cors_origins(value: str) -> list[str]:
+    origins = [item.strip() for item in value.split(",") if item.strip()]
+    return origins or ["*"]
+
+
+cors_origins = parse_cors_origins(settings.cors_allow_origins)
+cors_allow_credentials = True
+if "*" in cors_origins:
+    cors_origins = ["*"]
+    cors_allow_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -133,3 +152,5 @@ app.include_router(inventory.router, prefix="/inventory", tags=["inventory"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(marketing.router, prefix="/marketing", tags=["marketing"])
 app.include_router(monitoring.router, prefix="/monitoring", tags=["monitoring"])
+app.include_router(admin.router, prefix="/admin", tags=["admin"])
+app.include_router(media.router, prefix="/media", tags=["media"])

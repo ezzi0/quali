@@ -1,6 +1,6 @@
 """Unit/inventory model"""
 from decimal import Decimal
-from sqlalchemy import String, Integer, Numeric, Enum, ARRAY
+from sqlalchemy import String, Integer, Numeric, Enum, ARRAY, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.ext.mutable import MutableList
 from typing import Optional
@@ -23,16 +23,23 @@ class Unit(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(255))
+    slug: Mapped[Optional[str]] = mapped_column(String(255))
+    developer: Mapped[Optional[str]] = mapped_column(String(255))
+    image_url: Mapped[Optional[str]] = mapped_column(String(500))
 
     # Pricing
     price: Mapped[Decimal] = mapped_column(Numeric(15, 2))
     currency: Mapped[str] = mapped_column(
         String(3), default="AED", server_default="AED")
+    price_display: Mapped[Optional[str]] = mapped_column(String(50))
+    payment_plan: Mapped[Optional[str]] = mapped_column(String(50))
 
     # Physical
-    area_m2: Mapped[int] = mapped_column(Integer)
-    beds: Mapped[int] = mapped_column(Integer)
-    baths: Mapped[Optional[int]] = mapped_column(Integer)
+    area_m2: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    beds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    baths: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bedrooms_label: Mapped[Optional[str]] = mapped_column(String(100))
+    unit_sizes: Mapped[Optional[str]] = mapped_column(String(100))
 
     # Location
     location: Mapped[str] = mapped_column(String(255), index=True)
@@ -50,6 +57,15 @@ class Unit(Base, TimestampMixin):
         server_default="available",
         index=True,
     )
+    active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true")
+    featured: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false")
+
+    # Timeline & ROI
+    handover: Mapped[Optional[str]] = mapped_column(String(50))
+    handover_year: Mapped[Optional[int]] = mapped_column(Integer)
+    roi: Mapped[Optional[str]] = mapped_column(String(50))
 
     # Features/amenities
     features: Mapped[Optional[list[str]]] = mapped_column(

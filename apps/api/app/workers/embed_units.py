@@ -24,7 +24,10 @@ def embed_all_units():
 
         # Get all available units
         units = db.execute(
-            select(Unit).where(Unit.status == UnitStatus.AVAILABLE)
+            select(Unit).where(
+                Unit.status == UnitStatus.AVAILABLE,
+                Unit.active.is_(True),
+            )
         ).scalars().all()
 
         logger.info("embedding_units_started", count=len(units))

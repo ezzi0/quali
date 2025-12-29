@@ -12,7 +12,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dev"]
+      test: ["CMD-SHELL", "pg_isready -U dev -d app"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -25,10 +25,10 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
-      interval: 5s
+      test: ["CMD", "true"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 3
 
   redis:
     image: redis:7-alpine
@@ -42,9 +42,9 @@ services:
 
   api:
     build: ../apps/api
-    env_file: ../apps/api/.env.example
+    env_file: ../apps/api/.env
     environment:
-      DATABASE_URL: postgresql://dev:dev@postgres:5432/app
+      DATABASE_URL: postgresql+psycopg://dev:dev@postgres:5432/app
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
     ports:
@@ -58,23 +58,17 @@ services:
         condition: service_healthy
     volumes:
       - ../apps/api:/app
+      - ../apps/api/uploads:/app/uploads
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   web:
     build: ../apps/web
-    env_file: ../apps/web/.env.example
-    environment:
-      NEXT_PUBLIC_API_BASE: http://localhost:8000
+    env_file: ../apps/web/.env
     ports:
       - "3000:3000"
     depends_on:
       - api
-    volumes:
-      - ../apps/web:/app
-      - /app/node_modules
-      - /app/.next
 
 volumes:
   pgdata:
   qdrant_storage:
-

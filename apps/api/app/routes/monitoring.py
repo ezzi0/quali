@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..deps import get_db
-from ..auth import verify_optional_secret
+from ..auth import require_staff_user
 from ..monitoring import run_monitoring_checks, HealthMonitor, AlertManager
 
 router = APIRouter()
@@ -23,7 +23,7 @@ async def health_check(db: Session = Depends(get_db)):
 @router.get("/alerts")
 async def get_alerts(
     db: Session = Depends(get_db),
-    _auth: None = Depends(verify_optional_secret),
+    _user = Depends(require_staff_user),
 ):
     """
     Get current system alerts.
@@ -45,7 +45,7 @@ async def get_alerts(
 @router.get("/monitoring")
 async def run_monitoring(
     db: Session = Depends(get_db),
-    _auth: None = Depends(verify_optional_secret),
+    _user = Depends(require_staff_user),
 ):
     """
     Run full monitoring suite.
@@ -54,4 +54,3 @@ async def run_monitoring(
     Should be called periodically (every 5 minutes recommended).
     """
     return run_monitoring_checks(db)
-
