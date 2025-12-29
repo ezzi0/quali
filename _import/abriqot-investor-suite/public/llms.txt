@@ -1,0 +1,18 @@
+# Dubai Off-Plan Investment Advisory
+
+## About
+We help international investors find and evaluate Dubai off-plan real estate opportunities. Our service provides curated shortlists, deal memos, and specialist matching.
+
+## Services
+- Investment matching based on budget, payment plan comfort, and timeline
+- Deal memos with assumptions, risks, and verification checklists
+- Specialist matching for transaction support
+
+## Key Pages
+- /investments - Browse off-plan opportunities
+- /guides - Investment education articles
+- /answers - FAQ and common questions
+- /match - Get matched to opportunities
+
+## Contact
+For inquiries, visit /contact
