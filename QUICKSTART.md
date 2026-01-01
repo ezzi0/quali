@@ -28,7 +28,7 @@ make dev
 
 Visit:
 - **API**: http://localhost:8000
-- **Web UI**: http://localhost:3000
+- **Web UI**: http://localhost:5173
 - **Qdrant Dashboard**: http://localhost:6333/dashboard
 
 ## Option 2: Manual Setup
@@ -86,7 +86,7 @@ npm install
 npm run dev
 ```
 
-Web runs on http://localhost:3000
+Web runs on http://localhost:5173
 
 ## Verify Installation
 
@@ -119,7 +119,7 @@ Initially empty (no leads yet).
 
 ### 4. Test Web UI
 
-1. Open http://localhost:3000
+1. Open http://localhost:5173
 2. You should see the **Lead Inbox** (empty initially)
 3. Click "Inventory" to see sample units
 
@@ -148,7 +148,7 @@ curl -X POST http://localhost:8000/webhooks/leadads \
   }'
 ```
 
-Now refresh http://localhost:3000 and you'll see your first lead!
+Now refresh http://localhost:5173 and you'll see your first lead!
 
 ## Test Agent Chat (Simple)
 
@@ -167,7 +167,7 @@ This will stream back agent responses.
 
 ### Port Already in Use
 
-If ports 5432, 6333, 6379, 8000, or 3000 are taken:
+If ports 5432, 6333, 6379, 8000, or 5173 are taken:
 
 ```bash
 # Find and kill the process
@@ -209,7 +209,7 @@ Solution: Add `OPENAI_API_KEY=sk-...` to `apps/api/.env`
 ## Next Steps
 
 1. **Explore the UI**
-   - Lead Inbox: http://localhost:3000
+   - Lead Inbox: http://localhost:5173
    - Create a lead and view the detail page
 
 2. **Test the API**
@@ -285,4 +285,3 @@ Now that you have the system running:
    - Add integration tests
 
 Happy building! 🚀
-

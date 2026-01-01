@@ -65,7 +65,7 @@ uvicorn app.main:app --reload
 cd ../web
 npm install
 npm run dev
-# Web runs on http://localhost:3000
+# Web runs on http://localhost:5173
 ```
 
 ### Using Docker Compose (Full Stack)
@@ -80,7 +80,7 @@ This starts:
 - Qdrant (6333)
 - Redis (6379)
 - API (8000)
-- Web (3000)
+- Web (5173)
 
 ## Project Structure
 
@@ -229,4 +229,3 @@ tsc --noEmit
 ## License
 
 MIT
-

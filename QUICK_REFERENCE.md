@@ -22,7 +22,7 @@ cd apps/web
 npm run dev
 
 # 5. Open browser
-# - Frontend: http://localhost:3000/marketing/personas
+# - Frontend: http://localhost:5173/marketing/personas
 # - API Docs: http://localhost:8000/docs
 ```
 
@@ -31,10 +31,10 @@ npm run dev
 ## 📍 Key URLs
 
 ### Frontend Dashboards
-- **Personas**: http://localhost:3000/marketing/personas
-- **Creatives**: http://localhost:3000/marketing/creatives
-- **Campaigns**: http://localhost:3000/marketing/campaigns
-- **Budget Optimizer**: http://localhost:3000/marketing/budget
+- **Personas**: http://localhost:5173/marketing/personas
+- **Creatives**: http://localhost:5173/marketing/creatives
+- **Campaigns**: http://localhost:5173/marketing/campaigns
+- **Budget Optimizer**: http://localhost:5173/marketing/budget
 
 ### API Endpoints
 - **Health Check**: GET http://localhost:8000/monitoring/health

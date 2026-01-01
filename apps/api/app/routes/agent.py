@@ -179,6 +179,13 @@ async def create_session(
     if session_id:
         existing_context = session_store.get_session(session_id)
         if existing_context:
+            if not existing_context.get("conversation_history"):
+                greeting = "Welcome to Abriqot. What's your first name?"
+                existing_context.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": greeting}
+                )
+                existing_context.setdefault("collected_data", {})["last_question"] = "name"
+                session_store.save_session(session_id, existing_context)
             logger.info("session_recovered_by_id", session_id=session_id)
             return {
                 "session_id": session_id,
@@ -191,6 +198,13 @@ async def create_session(
     if email:
         existing_context = session_store.get_session_by_email(email)
         if existing_context:
+            if not existing_context.get("conversation_history"):
+                greeting = "Welcome to Abriqot. What's your first name?"
+                existing_context.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": greeting}
+                )
+                existing_context.setdefault("collected_data", {})["last_question"] = "name"
+                session_store.save_session(existing_context.get("session_id"), existing_context)
             logger.info("session_recovered_by_email", email=email)
             return {
                 "session_id": existing_context.get("session_id"),
@@ -202,6 +216,13 @@ async def create_session(
     if phone:
         existing_context = session_store.get_session_by_phone(phone)
         if existing_context:
+            if not existing_context.get("conversation_history"):
+                greeting = "Welcome to Abriqot. What's your first name?"
+                existing_context.setdefault("conversation_history", []).append(
+                    {"role": "assistant", "content": greeting}
+                )
+                existing_context.setdefault("collected_data", {})["last_question"] = "name"
+                session_store.save_session(existing_context.get("session_id"), existing_context)
             logger.info("session_recovered_by_phone", phone=phone)
             return {
                 "session_id": existing_context.get("session_id"),
@@ -216,7 +237,7 @@ async def create_session(
         lead_id=lead_id,
         session_id=session_id
     )
-    greeting = "Welcome to Gaussian. What's your first name?"
+    greeting = "Welcome to Abriqot. What's your first name?"
     context.conversation_history.append({"role": "assistant", "content": greeting})
     context.collected_data["last_question"] = "name"
     

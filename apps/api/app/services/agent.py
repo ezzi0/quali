@@ -80,13 +80,12 @@ class QualificationAgent:
             "property_type",
             "beds",
             "contact_method",
-            "consent",
         ]
         self.min_budget_aed = 300000
         self.deep_dive_budget_aed = 1000000
 
         # Define instructions (from OpenAI guide: clear, actionable, edge-case aware)
-        self.instructions = """You are Gaussian, a real estate qualification assistant for Dubai off-plan buyers and investors.
+        self.instructions = """You are Abriqot, a real estate qualification assistant for Dubai off-plan buyers and investors.
 
 GOAL: Qualify fit quickly, gather essentials, then finish cleanly.
 
@@ -97,18 +96,18 @@ FIT CHECK (required):
 4) Timeline (urgency)
 
 MATCHING (once fit):
-5) Area(s) in Dubai
+5) Area(s) in Dubai (if unsure, keep it open)
 6) Property type
 7) Bedrooms
 
 DEEPER (ask only if needed): financing (cash vs mortgage, pre-approval)
 
 CONTACT:
-Collect at least one of email or phone. Ask: "Is it ok to contact you on WhatsApp or email?"
+Collect at least one of email or phone before showing matches.
 
 RULES:
 - Ask ONE question at a time.
-- Do not show inventory until fit-check + matching fields are complete.
+- Do not show inventory until fit-check + matching fields + contact are complete.
 - After saving the lead and qualification, end with: "Thanks [Name]! A specialist will contact you within the next 30 minutes."
 """
 
@@ -384,9 +383,7 @@ RULES:
                 if not (collected.get("contact_email") or collected.get("contact_phone")):
                     missing.append(field)
                 continue
-            if field == "consent":
-                if collected.get("consent_email") is None and collected.get("consent_whatsapp") is None:
-                    missing.append(field)
+            if field == "areas" and collected.get("area_unknown"):
                 continue
             val = collected.get(field)
             if val is None or val == "" or val == []:
@@ -648,8 +645,19 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                 return value
         return None
 
-    def _extract_timeline(self, text: str) -> Tuple[Optional[str], Optional[int]]:
+    def _extract_timeline(self, text: str, last_question: Optional[str] = None) -> Tuple[Optional[str], Optional[int]]:
         lowered = text.lower()
+        if last_question == "timeline":
+            plain = text.strip()
+            if re.fullmatch(r"\d{1,2}", plain):
+                months = int(plain)
+                if months <= 3:
+                    return "0-3 months", months
+                if months <= 6:
+                    return "3-6 months", months
+                if months <= 12:
+                    return "6-12 months", months
+                return "12+ months", months
         if any(term in lowered for term in ["asap", "immediate", "right away", "now"]):
             return "ASAP (0-3 months)", 1
         month_match = re.search(r'(\d+)\s*month', lowered)
@@ -666,31 +674,169 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
             return "12+ months", 15
         return None, None
 
-    def _extract_consent(self, text: str) -> Tuple[Optional[bool], Optional[bool]]:
-        lowered = text.lower()
-        if any(term in lowered for term in ["no", "don't", "do not", "stop"]):
-            return False, False
-        if "email" in lowered and "whatsapp" not in lowered:
-            return True, False
-        if "whatsapp" in lowered and "email" not in lowered:
-            return False, True
-        if any(term in lowered for term in ["yes", "ok", "okay", "sure", "fine"]):
-            return True, True
-        return None, None
-
-    def _extract_budget_from_text(self, text: str) -> Tuple[Optional[float], Optional[float]]:
+    def _extract_budget_from_text(self, text: str, last_question: Optional[str] = None) -> Tuple[Optional[float], Optional[float]]:
         if not re.search(r'\d', text):
             return None, None
+        lowered = text.lower()
+        if last_question in {"timeline", "beds"}:
+            if re.fullmatch(r"\d{1,2}", text.strip()):
+                return None, None
+            if "month" in lowered or "year" in lowered:
+                return None, None
         # Avoid treating phone numbers as budgets
         if re.search(r'\b\d{9,}\b', text):
             return None, None
+        has_currency_hint = any(token in lowered for token in ["aed", "dirham", "usd", "$", "k", "m", "million"])
+        if not has_currency_hint:
+            numbers = re.findall(r'\d+(?:\.\d+)?', lowered)
+            if numbers and max(float(n) for n in numbers) < 1000:
+                return None, None
         result = tools.normalize_budget(text)
         return result.get("min"), result.get("max")
+
+    def _detect_area_guidance_request(self, text: str) -> Optional[str]:
+        lowered = text.lower()
+        if not any(term in lowered for term in ["recommend", "suggest", "where would you", "where should", "best area", "best place", "what do you recommend", "where is best"]):
+            return None
+        if any(term in lowered for term in ["luxury", "luxurious", "premium", "high-end", "upscale", "exclusive"]):
+            return "luxury"
+        if any(term in lowered for term in ["value", "affordable", "budget", "cheaper", "growth", "return", "roi"]):
+            return "value"
+        return "general"
+
+    def _detect_persona_clarify_request(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(
+            term in lowered for term in [
+                "what's the difference",
+                "whats the difference",
+                "difference",
+                "what do you mean",
+                "what's that",
+                "how is that different",
+                "which is better",
+            ]
+        )
+
+    def _is_user_question(self, text: str) -> bool:
+        lowered = text.strip().lower()
+        if "?" in text:
+            return True
+        question_starts = (
+            "what",
+            "why",
+            "how",
+            "where",
+            "which",
+            "who",
+            "whats",
+            "what's",
+            "can you",
+            "could you",
+            "do you",
+            "should i",
+        )
+        return lowered.startswith(question_starts)
+
+    def _question_key_to_slot(self, key: Optional[str]) -> Optional[str]:
+        if not key:
+            return key
+        if key.startswith("consent"):
+            return None
+        if key in {"persona_retry", "persona_clarify"}:
+            return "persona"
+        if key in {"budget_too_low"}:
+            return "budget"
+        if key.endswith("_help"):
+            return key.replace("_help", "")
+        if key.startswith("area_"):
+            return "area"
+        return key
+
+    def _slot_filled(self, slot: str, data: Dict[str, Any]) -> bool:
+        if slot == "name":
+            return bool(data.get("contact_name"))
+        if slot == "persona":
+            return bool(data.get("persona"))
+        if slot == "budget":
+            return bool(data.get("budget_max"))
+        if slot == "timeline":
+            return bool(data.get("move_in_date"))
+        if slot == "area":
+            return bool(data.get("areas")) or bool(data.get("area_unknown"))
+        if slot == "property_type":
+            return bool(data.get("property_type"))
+        if slot == "beds":
+            return data.get("beds") is not None
+        if slot == "financing":
+            return bool(data.get("financing_notes")) or data.get("preapproved") is not None
+        if slot == "contact":
+            return bool(data.get("contact_email") or data.get("contact_phone"))
+        return False
+
+    def _is_area_unknown(self, text: str) -> bool:
+        lowered = text.strip().lower()
+        if not lowered:
+            return False
+        unknown_phrases = [
+            "not sure",
+            "not really",
+            "no idea",
+            "dont know",
+            "don't know",
+            "no preference",
+            "no prefs",
+            "any area",
+            "anywhere",
+            "open",
+            "open to",
+            "wherever",
+            "doesn't matter",
+            "doesnt matter",
+            "not decided",
+            "unsure",
+            "whatever",
+        ]
+        if lowered in {"any", "either", "all", "no", "none"}:
+            return True
+        return any(phrase in lowered for phrase in unknown_phrases)
+
+    def _infer_areas_from_text(self, text: str) -> List[str]:
+        lowered = text.lower()
+        area_map = {
+            "marina": "Dubai Marina",
+            "dubai marina": "Dubai Marina",
+            "downtown": "Downtown Dubai",
+            "downtown dubai": "Downtown Dubai",
+            "creek": "Dubai Creek Harbour",
+            "creek harbour": "Dubai Creek Harbour",
+            "business bay": "Business Bay",
+            "palm": "Palm Jumeirah",
+            "palm jumeirah": "Palm Jumeirah",
+            "hills": "Dubai Hills",
+            "dubai hills": "Dubai Hills",
+            "jvc": "Jumeirah Village Circle",
+            "jumeirah village circle": "Jumeirah Village Circle",
+            "mbr": "MBR City",
+            "mbr city": "MBR City",
+            "dubai south": "Dubai South",
+            "arabian ranches": "Arabian Ranches",
+        }
+        matches = []
+        for key, name in area_map.items():
+            if key in lowered:
+                matches.append(name)
+        return list(dict.fromkeys(matches))
 
     def _normalize_areas(self, text: str) -> List[str]:
         raw = text.replace("&", ",").replace(" and ", ",")
         parts = [part.strip() for part in raw.split(",") if part.strip()]
-        return [part.title() for part in parts]
+        cleaned = []
+        for part in parts:
+            if self._is_area_unknown(part):
+                continue
+            cleaned.append(part.title())
+        return cleaned
 
     def _ingest_message(self, message: str, context: AgentContext) -> None:
         data = context.collected_data
@@ -704,9 +850,9 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         if phone:
             data["contact_phone"] = phone
 
-        last_question = data.get("last_question")
+        base_question = self._question_key_to_slot(data.get("last_question"))
 
-        if last_question == "name" and not data.get("contact_name"):
+        if base_question == "name" and not data.get("contact_name"):
             if "@" not in text and not re.search(r'\d', text):
                 if 1 <= len(text.split()) <= 4:
                     cleaned = re.sub(r'^(my name is|i am|i\'m)\s+', '', text, flags=re.IGNORECASE)
@@ -715,17 +861,24 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         persona = self._extract_persona(text)
         if persona and not data.get("persona"):
             data["persona"] = persona
+            data.pop("persona_clarify_requested", None)
 
-        if last_question == "persona" and persona:
+        if base_question == "persona" and persona:
             data["persona"] = persona
+            if not data.get("city"):
+                data["city"] = "Dubai"
+            data.pop("persona_clarify_requested", None)
+        elif base_question == "persona" and not persona:
+            if self._detect_persona_clarify_request(text):
+                data["persona_clarify_requested"] = True
 
-        budget_min, budget_max = self._extract_budget_from_text(text)
+        budget_min, budget_max = self._extract_budget_from_text(text, last_question=base_question)
         if budget_max:
             data["budget_min"] = budget_min or 0
             data["budget_max"] = budget_max
 
-        if last_question == "timeline" and not data.get("move_in_date"):
-            label, months = self._extract_timeline(text)
+        if base_question == "timeline" and not data.get("move_in_date"):
+            label, months = self._extract_timeline(text, last_question=base_question)
             if label:
                 data["move_in_date"] = label
                 data["urgency_months"] = months
@@ -736,11 +889,25 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                 data["move_in_date"] = label
                 data["urgency_months"] = months
 
-        if last_question == "area":
-            areas = self._normalize_areas(text)
-            if areas:
-                data["areas"] = tools.geo_match(data.get("city") or "Dubai", areas)
+        if base_question == "area":
+            guidance = self._detect_area_guidance_request(text)
+            if guidance:
+                data["area_guidance_requested"] = guidance
+            elif self._is_area_unknown(text):
+                if data.get("area_help_shown"):
+                    data["area_unknown"] = True
+                    data["areas"] = []
+                else:
+                    data["area_help_shown"] = True
                 data["city"] = data.get("city") or "Dubai"
+            else:
+                areas = self._infer_areas_from_text(text)
+                if not areas:
+                    areas = self._normalize_areas(text)
+                if areas:
+                    data["areas"] = tools.geo_match(data.get("city") or "Dubai", areas)
+                    data["city"] = data.get("city") or "Dubai"
+                    data.pop("area_unknown", None)
 
         if "dubai" in text.lower():
             data["city"] = "Dubai"
@@ -753,7 +920,7 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         if beds is not None and data.get("beds") is None:
             data["beds"] = beds
 
-        if last_question == "financing":
+        if base_question == "financing":
             lowered = text.lower()
             if "cash" in lowered:
                 data["preapproved"] = True
@@ -762,15 +929,18 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                 data["financing_notes"] = "mortgage"
                 if "pre" in lowered and "approve" in lowered:
                     data["preapproved"] = True
-                elif "not" in lowered:
+                elif "not" in lowered or "need" in lowered:
                     data["preapproved"] = False
 
-        if last_question == "consent":
-            consent_email, consent_whatsapp = self._extract_consent(text)
-            if consent_email is not None:
-                data["consent_email"] = consent_email
-            if consent_whatsapp is not None:
-                data["consent_whatsapp"] = consent_whatsapp
+        if base_question and self._slot_filled(base_question, data):
+            data.pop("help_requested_for", None)
+
+        if base_question and not self._slot_filled(base_question, data) and self._is_user_question(text):
+            if base_question == "persona":
+                if self._detect_persona_clarify_request(text):
+                    data["persona_clarify_requested"] = True
+            elif base_question != "area":
+                data["help_requested_for"] = base_question
 
     def _needs_financing_question(self, data: Dict[str, Any]) -> bool:
         urgency = data.get("urgency_months")
@@ -788,11 +958,24 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         if not data.get("contact_name"):
             return "ask", "name"
 
-        if not data.get("persona"):
-            return "ask", "persona"
+        if data.get("persona_clarify_requested") and not data.get("persona"):
+            data.pop("persona_clarify_requested", None)
+            return "ask", "persona_clarify"
+
+        help_for = data.get("help_requested_for")
+        if help_for and not self._slot_filled(help_for, data):
+            data.pop("help_requested_for", None)
+            if help_for == "persona":
+                return "ask", "persona_clarify"
+            if help_for == "area":
+                return "ask", "area_help"
+            return "ask", f"{help_for}_help"
 
         if data.get("persona") == "renter":
             return "ask", "persona_retry"
+
+        if not data.get("persona"):
+            return "ask", "persona"
 
         if not data.get("budget_max"):
             return "ask", "budget"
@@ -803,7 +986,12 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         if not data.get("move_in_date"):
             return "ask", "timeline"
 
-        if not data.get("areas"):
+        if not data.get("areas") and not data.get("area_unknown"):
+            if data.get("area_guidance_requested") and not data.get("area_guidance_shown"):
+                data["area_guidance_shown"] = True
+                return "ask", f"area_guidance_{data.get('area_guidance_requested')}"
+            if data.get("area_help_shown"):
+                return "ask", "area_help"
             return "ask", "area"
 
         if not data.get("property_type"):
@@ -816,31 +1004,38 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
             data["financing_asked"] = True
             return "ask", "financing"
 
-        if not data.get("matches"):
-            return "matches", None
-
         if not (data.get("contact_email") or data.get("contact_phone")):
             return "ask", "contact"
 
-        if data.get("consent_email") is None and data.get("consent_whatsapp") is None:
-            return "ask", "consent"
+        if not data.get("matches"):
+            return "matches", None
 
         return "finalize", None
 
     def _question_text(self, key: str) -> str:
         questions = {
-            "name": "Welcome to Gaussian. What's your first name?",
+            "name": "Welcome to Abriqot. What's your first name?",
             "persona": "Are you buying a home or investing in Dubai off-plan?",
             "persona_retry": "We only work with buyers and investors. Are you buying or investing?",
-            "budget": "What budget range in AED works for you?",
+            "persona_clarify": "Buying = personal use home. Investing = focused on returns/ROI. Which one fits you?",
+            "budget": "What budget range in AED works for you? (e.g., 600k-1.2M)",
+            "budget_help": "A quick range is enough — even a max helps (e.g., 600k-1.2M). What budget in AED works for you?",
             "budget_too_low": "We focus on opportunities above AED 300k. Is that within your range?",
             "timeline": "When are you looking to buy? (0-3 / 3-6 / 6-12 / 12+ months)",
-            "area": "Which area(s) in Dubai are you considering?",
-            "property_type": "Apartment, villa, townhouse, or studio?",
-            "beds": "How many bedrooms do you need?",
-            "financing": "Will this be cash or mortgage? If mortgage, are you pre-approved?",
-            "contact": "What's the best email or phone number to reach you?",
-            "consent": "Is it ok to contact you on WhatsApp or email?",
+            "timeline_help": "A rough window is fine. Are you looking in 0-3, 3-6, 6-12, or 12+ months?",
+            "area": "Any preferred areas? Quick picks: Marina (rental demand), Downtown (prime), Creek Harbour (growth), Business Bay (value). You can say 'not sure'.",
+            "area_help": "Popular picks: Dubai Marina (rental demand), Downtown (prime/brand), Creek Harbour (growth), Business Bay (value). Which fits, or keep it open?",
+            "area_guidance_luxury": "For luxury: Downtown (prime/brand), Palm Jumeirah (ultra-luxury), Dubai Hills (newer upscale), and Dubai Marina (lifestyle). Which should I focus on, or keep it open?",
+            "area_guidance_value": "For value/growth: Business Bay (value), Creek Harbour (growth), and JVC (price). Which should I focus on, or keep it open?",
+            "area_guidance_general": "Happy to recommend. Luxury: Downtown/Palm. Growth: Creek Harbour. Value: Business Bay/JVC. Which direction fits, or keep it open?",
+            "property_type": "Which fits best: apartment, villa, townhouse, or studio?",
+            "property_type_help": "Apartment = low maintenance, villa = space, townhouse = in-between. Which fits best?",
+            "beds": "How many bedrooms do you need? (studio/1/2/3+)",
+            "beds_help": "Studio = open plan; 1/2/3+ are common. What do you need?",
+            "financing": "How do you plan to pay - cash, mortgage pre-approved, or mortgage needed?",
+            "financing_help": "Mortgage pre-approved means the bank confirmed your limit. Are you pre-approved, need a mortgage, or paying cash?",
+            "contact": "What's the best email and phone number to reach you? One is enough if you prefer.",
+            "contact_help": "You can share either email or phone — which is easiest?",
         }
         return questions.get(key, "Could you share a bit more detail?")
 
@@ -927,8 +1122,13 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         action, payload = self._next_action(context)
 
         if action == "ask":
-            question = self._question_text(payload or "")
-            context.collected_data["last_question"] = payload
+            question_key = payload or ""
+            question = self._question_text(question_key)
+            if question_key == "persona":
+                name = context.collected_data.get("contact_name")
+                if name:
+                    question = f"Nice to meet you, {name}. {question}"
+            context.collected_data["last_question"] = self._question_key_to_slot(question_key)
             context.conversation_history.append({
                 "role": "assistant",
                 "content": question
@@ -946,9 +1146,10 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         if action == "matches":
             data = context.collected_data
             data["last_question"] = None
+            area = (data.get("areas") or [None])[0] if data.get("areas") else None
             criteria = {
                 "city": data.get("city"),
-                "area": (data.get("areas") or [None])[0],
+                "area": area,
                 "property_type": data.get("property_type"),
                 "beds": data.get("beds"),
                 "min_price": data.get("budget_min"),
@@ -967,20 +1168,98 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                 "name": "inventory_search",
                 "content": str(matches),
             })
+            response_messages = [
+                {
+                    "type": "text",
+                    "content": "Here are a few options that match what you shared:"
+                },
+                {
+                    "type": "tool_call",
+                    "tool": "inventory_search",
+                    "arguments": criteria,
+                    "result": matches,
+                },
+            ]
+
+            if data.get("contact_email") or data.get("contact_phone"):
+                lead_id = self._ensure_lead(context)
+                contact = {
+                    "name": data.get("contact_name"),
+                    "email": data.get("contact_email"),
+                    "phone": data.get("contact_phone"),
+                    "consent_email": bool(data.get("contact_email")),
+                    "consent_sms": False,
+                    "consent_whatsapp": bool(data.get("contact_phone")),
+                }
+                profile = {
+                    "persona": data.get("persona"),
+                    "city": data.get("city"),
+                    "areas": data.get("areas") or [],
+                    "property_type": data.get("property_type"),
+                    "beds": data.get("beds"),
+                    "budget_min": data.get("budget_min"),
+                    "budget_max": data.get("budget_max"),
+                    "move_in_date": data.get("move_in_date"),
+                    "preapproved": data.get("preapproved"),
+                    "financing_notes": data.get("financing_notes"),
+                    "preferences": data.get("preferences", []),
+                }
+                save_result = tools.save_lead_profile(self.db, lead_id, contact, profile)
+                score_result = tools.lead_score(profile, data.get("matches", []), contact)
+                persist_payload = {
+                    "lead_id": lead_id,
+                    "qualified": score_result.get("qualified", False),
+                    "score": score_result.get("score", 0),
+                    "reasons": score_result.get("reasons", []),
+                    "missing_info": self._missing_required_fields(data),
+                    "suggested_next_step": "A specialist will contact you within 30 minutes.",
+                    "top_matches": data.get("matches", []),
+                }
+                persist_result = tools.persist_qualification(self.db, lead_id, persist_payload)
+                data["qualification_saved"] = True
+
+                final_message = self._final_message(data.get("contact_name"))
+                context.conversation_history.append({
+                    "role": "assistant",
+                    "content": final_message
+                })
+
+                response_messages.extend(
+                    [
+                        {
+                            "type": "tool_call",
+                            "tool": "save_lead_profile",
+                            "arguments": {"lead_id": lead_id, "contact": contact, "profile": profile},
+                            "result": save_result,
+                        },
+                        {
+                            "type": "tool_call",
+                            "tool": "lead_score",
+                            "arguments": {"profile": profile, "top_matches": data.get("matches", []), "contact": contact},
+                            "result": score_result,
+                        },
+                        {
+                            "type": "tool_call",
+                            "tool": "persist_qualification",
+                            "arguments": persist_payload,
+                            "result": persist_result,
+                        },
+                        {
+                            "type": "text",
+                            "content": final_message,
+                        },
+                    ]
+                )
+
+                return {
+                    "messages": response_messages,
+                    "context": context,
+                    "should_continue": False,
+                    "qualification": None,
+                }
 
             return {
-                "messages": [
-                    {
-                        "type": "text",
-                        "content": "Here are a few options that match what you shared:"
-                    },
-                    {
-                        "type": "tool_call",
-                        "tool": "inventory_search",
-                        "arguments": criteria,
-                        "result": matches,
-                    },
-                ],
+                "messages": response_messages,
                 "context": context,
                 "should_continue": True,
                 "qualification": None,
@@ -989,15 +1268,32 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
         if action == "finalize":
             data = context.collected_data
             data["last_question"] = None
+            if data.get("qualification_saved"):
+                final_message = self._final_message(data.get("contact_name"))
+                context.conversation_history.append({
+                    "role": "assistant",
+                    "content": final_message
+                })
+                return {
+                    "messages": [
+                        {
+                            "type": "text",
+                            "content": final_message,
+                        }
+                    ],
+                    "context": context,
+                    "should_continue": False,
+                    "qualification": None,
+                }
             lead_id = self._ensure_lead(context)
 
             contact = {
                 "name": data.get("contact_name"),
                 "email": data.get("contact_email"),
                 "phone": data.get("contact_phone"),
-                "consent_email": data.get("consent_email", True),
+                "consent_email": bool(data.get("contact_email")),
                 "consent_sms": False,
-                "consent_whatsapp": data.get("consent_whatsapp", True),
+                "consent_whatsapp": bool(data.get("contact_phone")),
             }
             profile = {
                 "persona": data.get("persona"),
@@ -1025,6 +1321,7 @@ Be lenient - conversational messages like greetings, clarifications, or follow-u
                 "top_matches": data.get("matches", []),
             }
             persist_result = tools.persist_qualification(self.db, lead_id, persist_payload)
+            data["qualification_saved"] = True
 
             final_message = self._final_message(data.get("contact_name"))
             context.conversation_history.append({

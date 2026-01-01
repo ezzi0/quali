@@ -40,7 +40,7 @@ for round in range(3):
 
 ### Step 1: User Visits Chat
 ```
-User opens http://localhost:3000/chat
+User opens http://localhost:5173/chat
   ↓
 UI checks localStorage:
   - quali_session_id
@@ -260,13 +260,13 @@ if (event.type === 'context_update') {
 ### Test 1: Same Browser Return
 ```bash
 # 1. Start conversation
-Visit: http://localhost:3000/chat
+Visit: http://localhost:5173/chat
 Say: "I want a 2BR apartment"
 Agent: "Great! What's your budget?"
 
 # 2. Close tab/browser
 
-# 3. Return to http://localhost:3000/chat
+# 3. Return to http://localhost:5173/chat
 Result: ✅ Conversation history restored!
 ```
 
@@ -337,13 +337,13 @@ self.ttl = 86400 * 30  # 30 days
 
 ### Full Conversation Test
 ```
-1. Visit: http://localhost:3000/chat
+1. Visit: http://localhost:5173/chat
 2. Say: "Hi, I want a property in Palm Jumeirah"
 3. Agent: Should now respond with text after calling tools ✓
 4. Continue conversation...
 5. Mention: "My email is test@example.com"
 6. Close browser
-7. Reopen: http://localhost:3000/chat
+7. Reopen: http://localhost:5173/chat
 8. Result: Conversation restored! ✓
 ```
 

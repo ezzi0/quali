@@ -33,6 +33,7 @@ export default function QualificationChat({
   onOpenFull?: () => void;
   onClose?: () => void;
 }) {
+  const greeting = "Welcome to Abriqot. What's your first name?";
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -40,15 +41,43 @@ export default function QualificationChat({
   const [status, setStatus] = useState('Ready');
   const [context, setContext] = useState<AgentContext | null>(null);
   const [sessionId, setSessionId] = useState('');
+  const [needsContextSync, setNeedsContextSync] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
 
   const isCompact = variant === 'widget';
-  const scrollHeightClass = isCompact ? 'max-h-64' : 'min-h-[60vh] max-h-[70vh]';
+  const scrollHeightClass = isCompact ? 'max-h-64' : 'h-[60vh] md:h-[70vh]';
+  const wrapperClass =
+    variant === 'page'
+      ? 'space-y-4'
+      : `bg-card border border-border rounded-2xl ${isCompact ? 'p-4' : 'p-6'} space-y-4`;
 
   useEffect(() => {
     initializeSession();
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('quali_messages:last', JSON.stringify(messages));
+      if (sessionId) {
+        localStorage.setItem(`quali_messages:${sessionId}`, JSON.stringify(messages));
+      }
+    } catch (error) {
+      console.error('Failed to persist messages:', error);
+    }
+  }, [messages, sessionId]);
+
+  useEffect(() => {
+    if (!context) return;
+    try {
+      localStorage.setItem('quali_context:last', JSON.stringify(context));
+      if (sessionId) {
+        localStorage.setItem(`quali_context:${sessionId}`, JSON.stringify(context));
+      }
+    } catch (error) {
+      console.error('Failed to persist context:', error);
+    }
+  }, [context, sessionId]);
 
   useEffect(() => {
     if (!autoScroll) return;
@@ -63,6 +92,42 @@ export default function QualificationChat({
       const storedSessionId = localStorage.getItem('quali_session_id');
       const storedEmail = localStorage.getItem('quali_email');
       const storedPhone = localStorage.getItem('quali_phone');
+      const cachedMessages = storedSessionId
+        ? localStorage.getItem(`quali_messages:${storedSessionId}`)
+        : localStorage.getItem('quali_messages:last');
+      const cachedContext = storedSessionId
+        ? localStorage.getItem(`quali_context:${storedSessionId}`)
+        : localStorage.getItem('quali_context:last');
+
+      if (storedSessionId) {
+        setSessionId(storedSessionId);
+      }
+
+      let cachedContextValue: AgentContext | null = null;
+      if (cachedContext) {
+        try {
+          const parsedContext = JSON.parse(cachedContext);
+          if (parsedContext?.conversation_history?.length) {
+            cachedContextValue = parsedContext;
+            setContext(parsedContext);
+          }
+        } catch (error) {
+          console.error('Failed to read cached context:', error);
+        }
+      }
+
+      let cachedMessagesValue: Message[] | null = null;
+      if (cachedMessages) {
+        try {
+          const parsed = JSON.parse(cachedMessages);
+          if (Array.isArray(parsed) && parsed.length) {
+            cachedMessagesValue = parsed;
+            setMessages(parsed);
+          }
+        } catch (error) {
+          console.error('Failed to read cached messages:', error);
+        }
+      }
 
       const response = await fetch(`${API_BASE}/agent/session`, {
         method: 'POST',
@@ -80,36 +145,98 @@ export default function QualificationChat({
 
       const data = await response.json();
       setSessionId(data.session_id);
-      setContext(data.context);
       localStorage.setItem('quali_session_id', data.session_id);
+      const resumeSucceeded = Boolean(data.resumed);
+      let syncContext: AgentContext | null = null;
+      if (!resumeSucceeded && cachedContextValue?.conversation_history?.length) {
+        setNeedsContextSync(true);
+        syncContext = { ...cachedContextValue, session_id: data.session_id };
+        setContext(syncContext);
+      } else {
+        setNeedsContextSync(false);
+        setContext(data.context);
+      }
       setStatus('Connected');
 
+      const history: Message[] = [];
       if (data.context?.conversation_history) {
-        const history: Message[] = [];
         for (const msg of data.context.conversation_history) {
           if ((msg.role === 'user' || msg.role === 'assistant') && msg.content) {
             history.push({ role: msg.role, content: msg.content });
           }
         }
-        if (history.length && data.context?.collected_data?.matches?.length) {
-          const last = history[history.length - 1];
-          if (last.role === 'assistant') {
-            last.tool_calls = [
-              {
-                tool: 'inventory_search',
-                result: data.context.collected_data.matches,
-              },
-            ];
-          }
-        }
-        if (history.length) {
-          setMessages(history);
+      }
+      if (history.length && history[0].role === 'assistant') {
+        const firstContent = history[0].content.toLowerCase();
+        if (firstContent.includes('shortlist the right properties')) {
+          history[0].content = greeting;
         }
       }
-      return { session_id: data.session_id as string, context: data.context as AgentContext };
+      const cachedLength = cachedMessagesValue ? cachedMessagesValue.length : 0;
+      if (!history.length) {
+        history.push({ role: 'assistant', content: greeting });
+      }
+      if (history.length && data.context?.collected_data?.matches?.length) {
+        const last = history[history.length - 1];
+        if (last.role === 'assistant') {
+          last.tool_calls = [
+            {
+              tool: 'inventory_search',
+              result: data.context.collected_data.matches,
+            },
+          ];
+        }
+      }
+      if (history.length && history.length >= cachedLength) {
+        setMessages(history);
+      }
+      return {
+        session_id: data.session_id as string,
+        context: data.context as AgentContext,
+        syncContext,
+      };
     } catch (error) {
       console.error('Failed to initialize session:', error);
       setStatus('Offline');
+      const storedSessionId = localStorage.getItem('quali_session_id');
+      const cachedMessages = storedSessionId
+        ? localStorage.getItem(`quali_messages:${storedSessionId}`)
+        : localStorage.getItem('quali_messages:last');
+      const cachedContext = storedSessionId
+        ? localStorage.getItem(`quali_context:${storedSessionId}`)
+        : localStorage.getItem('quali_context:last');
+      if (cachedContext) {
+        try {
+          const parsedContext = JSON.parse(cachedContext);
+          if (parsedContext?.conversation_history?.length) {
+            const cachedHistory: Message[] = [];
+            for (const msg of parsedContext.conversation_history) {
+              if ((msg.role === 'user' || msg.role === 'assistant') && msg.content) {
+                cachedHistory.push({ role: msg.role, content: msg.content });
+              }
+            }
+            if (cachedHistory.length) {
+              setContext(parsedContext);
+              setMessages(cachedHistory);
+              return null;
+            }
+          }
+        } catch (cachedError) {
+          console.error('Failed to read cached context:', cachedError);
+        }
+      }
+      if (cachedMessages) {
+        try {
+          const parsed = JSON.parse(cachedMessages);
+          if (Array.isArray(parsed) && parsed.length) {
+            setMessages(parsed);
+            return null;
+          }
+        } catch (cachedError) {
+          console.error('Failed to read cached messages:', cachedError);
+        }
+      }
+      setMessages((prev) => (prev.length ? prev : [{ role: 'assistant', content: greeting }]));
       return null;
     }
   };
@@ -118,13 +245,22 @@ export default function QualificationChat({
     if (!input.trim() || loading) return;
 
     let activeSessionId = sessionId;
-    let activeContext = context;
+    let syncContext = needsContextSync ? context : null;
 
     if (!activeSessionId) {
       const session = await initializeSession();
       if (session) {
         activeSessionId = session.session_id;
-        activeContext = session.context;
+        if (session.syncContext) {
+          syncContext = session.syncContext;
+        }
+      } else {
+        setStatus('Offline');
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: 'I could not connect the assistant. Please try again.' },
+        ]);
+        return;
       }
     }
 
@@ -143,7 +279,7 @@ export default function QualificationChat({
         body: JSON.stringify({
           message: userMessage,
           session_id: activeSessionId,
-          context: activeContext,
+          ...(syncContext ? { context: { ...syncContext, session_id: activeSessionId } } : {}),
         }),
       });
 
@@ -199,6 +335,7 @@ export default function QualificationChat({
         }
         if (event.type === 'context_update') {
           setContext(event.context);
+          setNeedsContextSync(false);
           if (event.context?.session_id) {
             setSessionId(event.context.session_id);
             localStorage.setItem('quali_session_id', event.context.session_id);
@@ -321,9 +458,10 @@ export default function QualificationChat({
   };
 
   const showHeader = variant !== 'page';
+  const showRoleLabel = variant !== 'page';
 
   return (
-    <div className={`bg-card border border-border rounded-2xl ${isCompact ? 'p-4' : 'p-6'} space-y-4`}>
+    <div className={wrapperClass}>
       {showHeader && (
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -360,18 +498,27 @@ export default function QualificationChat({
           const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
           setAutoScroll(distance < 80);
         }}
-        className={`${scrollHeightClass} overflow-y-auto space-y-3 pr-1`}
+        className={`${scrollHeightClass} overflow-y-auto space-y-3 pr-1 flex flex-col`}
       >
+        {messages.length === 0 && (
+          <div className="rounded-xl border px-4 py-3 text-sm bg-muted/40 border-border text-foreground max-w-[70%] self-start">
+            {showRoleLabel && <p className="text-xs text-muted-foreground mb-1">Assistant</p>}
+            <p className="whitespace-pre-wrap">{greeting}</p>
+          </div>
+        )}
         {messages.map((msg, idx) => (
           <div
             key={idx}
             className={`rounded-xl border px-4 py-3 text-sm ${
               msg.role === 'user'
-                ? 'bg-primary/10 border-primary/30 text-foreground ml-auto'
-                : 'bg-muted/40 border-border text-foreground'
+                ? 'bg-primary/10 border-primary/30 text-foreground ml-auto self-end text-right'
+                : 'bg-muted/40 border-border text-foreground self-start'
             }`}
+            style={{ maxWidth: '70%' }}
           >
-            <p className="text-xs text-muted-foreground mb-1">{msg.role === 'user' ? 'You' : 'Assistant'}</p>
+            {showRoleLabel && (
+              <p className="text-xs text-muted-foreground mb-1">{msg.role === 'user' ? 'You' : 'Assistant'}</p>
+            )}
             <p className="whitespace-pre-wrap">{msg.content}</p>
             {renderMatches(msg.tool_calls)}
             {variant === 'admin' && msg.tool_calls && msg.tool_calls.length > 0 && (
@@ -386,8 +533,8 @@ export default function QualificationChat({
           </div>
         ))}
         {isTyping && (
-          <div className="rounded-xl border px-4 py-3 text-sm bg-muted/40 border-border text-foreground max-w-[70%]">
-            <p className="text-xs text-muted-foreground mb-1">Assistant</p>
+          <div className="rounded-xl border px-4 py-3 text-sm bg-muted/40 border-border text-foreground max-w-[70%] self-start">
+            {showRoleLabel && <p className="text-xs text-muted-foreground mb-1">Assistant</p>}
             <div className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce [animation-delay:-0.2s]" />
               <span className="w-2 h-2 rounded-full bg-primary/60 animate-bounce [animation-delay:-0.1s]" />
@@ -407,7 +554,7 @@ export default function QualificationChat({
               sendMessage();
             }
           }}
-          placeholder="Ask about budget, areas, or timelines"
+          placeholder="Type your message..."
           className="flex-1 px-3 py-2 rounded-lg bg-muted/40 border border-border text-sm text-foreground"
           disabled={loading}
         />

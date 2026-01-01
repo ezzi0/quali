@@ -288,7 +288,7 @@ curl -X POST http://localhost:8000/agent/turn \
   -d '{"message":"How is my data protected?"}'
 ```
 
-**Or use the Chat UI**: http://localhost:3000/chat
+**Or use the Chat UI**: http://localhost:5173/chat
 
 ---
 

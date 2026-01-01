@@ -175,7 +175,7 @@ cd apps/web
 npm run dev
 
 # 5. Test
-open http://localhost:3000
+open http://localhost:5173
 curl http://localhost:8000/health
 ```
 
@@ -210,7 +210,7 @@ npm install  # if not done
 npm run dev
 
 # 7. Test
-open http://localhost:3000
+open http://localhost:5173
 curl http://localhost:8000/health
 ```
 
@@ -245,14 +245,14 @@ Should show interactive API documentation with all endpoints.
 
 ### 3. Frontend Access
 ```bash
-open http://localhost:3000
+open http://localhost:5173
 ```
 Should load the leads dashboard.
 
 ### 4. Marketing Dashboards
 ```bash
-open http://localhost:3000/marketing/personas
-open http://localhost:3000/marketing/creatives
+open http://localhost:5173/marketing/personas
+open http://localhost:5173/marketing/creatives
 ```
 Should load empty marketing dashboards (no data yet).
 
@@ -300,7 +300,7 @@ curl -X POST http://localhost:8000/marketing/personas/discover \
 
 ### 3. View in Dashboard
 ```bash
-open http://localhost:3000/marketing/personas
+open http://localhost:5173/marketing/personas
 ```
 
 Should show discovered personas!
@@ -326,7 +326,7 @@ Use this to verify your setup:
 
 ### Frontend
 - [ ] Node modules installed
-- [ ] Web server running (port 3000)
+- [ ] Web server running (port 5173)
 - [ ] Main dashboard accessible
 - [ ] Marketing dashboards accessible
 
@@ -526,7 +526,7 @@ cd apps/web && npm install && npm run dev
 
 # 5. Test
 curl http://localhost:8000/health
-open http://localhost:3000
+open http://localhost:5173
 ```
 
 **That's it!** You're ready to test. 🎉
@@ -545,4 +545,3 @@ open http://localhost:3000
 **Status**: 🟢 **READY TO TEST**
 
 All code is complete. Just need to start services!
-

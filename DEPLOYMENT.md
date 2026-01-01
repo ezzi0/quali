@@ -159,7 +159,7 @@ server {
     server_name yourdomain.com;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:5173;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
     }
@@ -328,7 +328,7 @@ services:
   grafana:
     image: grafana/grafana
     ports:
-      - "3001:3000"
+      - "3001:5173"
 ```
 
 ## Security
@@ -573,4 +573,3 @@ alembic downgrade -1
    - Datadog/New Relic for APM
 
 Congratulations on deploying! 🎉
-

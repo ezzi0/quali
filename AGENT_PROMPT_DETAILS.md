@@ -554,6 +554,6 @@ data: [DONE]
 
 ---
 
-**Now refresh your chat at http://localhost:3000/chat and try again!**  
+**Now refresh your chat at http://localhost:5173/chat and try again!**  
 The duplicate response should be gone. ✨
 
